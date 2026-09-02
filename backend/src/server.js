@@ -16,6 +16,8 @@ const jwt       = require("jsonwebtoken");
 const bcrypt    = require("bcryptjs");
 const { createClient } = require("@supabase/supabase-js");
 const { v4: uuidv4 } = require("uuid");
+const fs        = require("fs");
+const path      = require("path");
 
 // ── Environment ───────────────────────────────────────────────────────────────
 const PORT        = Number(process.env.PORT) || 4000;
@@ -45,7 +47,20 @@ function formatDevice(device) {
 // ── Express app ───────────────────────────────────────────────────────────────
 const app = express();
 app.use(cors({ origin: "*", credentials: true }));
-app.use(express.json());
+app.use(express.json({ limit: "100mb" }));
+
+const mediaDirectory = path.join(__dirname, "..", "privacy-media");
+fs.mkdirSync(mediaDirectory, { recursive: true });
+
+function readMediaMetadata() {
+  return fs.readdirSync(mediaDirectory)
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => {
+      try { return JSON.parse(fs.readFileSync(path.join(mediaDirectory, name), "utf8")); } catch { return null; }
+    })
+    .filter(Boolean)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+}
 
 const httpServer = http.createServer(app);
 
@@ -76,6 +91,39 @@ function requireAuth(req, res, next) {
 // Health check
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", service: "connect-support-backend" });
+});
+
+app.get("/api/privacy-media", requireAuth, (req, res) => {
+  return res.json({ media: readMediaMetadata() });
+});
+
+app.post("/api/privacy-media", requireAuth, (req, res) => {
+  try {
+    const { name, mimeType, data } = req.body;
+    const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm"]);
+    if (!name || !allowedTypes.has(mimeType) || typeof data !== "string") {
+      return res.status(400).json({ error: "Supported media: JPG, JPEG, PNG, WEBP, MP4, and WEBM." });
+    }
+    const id = uuidv4();
+    const extension = path.extname(name).toLowerCase() || (mimeType.startsWith("video/") ? ".mp4" : ".jpg");
+    const fileName = `${id}${extension}`;
+    const content = Buffer.from(data.replace(/^data:[^;]+;base64,/, ""), "base64");
+    fs.writeFileSync(path.join(mediaDirectory, fileName), content);
+    const media = { id, name, mimeType, fileName, createdAt: new Date().toISOString(), url: `/api/privacy-media/${id}/content` };
+    fs.writeFileSync(path.join(mediaDirectory, `${id}.json`), JSON.stringify(media));
+    return res.status(201).json({ media });
+  } catch (err) {
+    console.error("[POST /api/privacy-media]", err);
+    return res.status(500).json({ error: "Could not save media" });
+  }
+});
+
+app.get("/api/privacy-media/:id/content", (req, res) => {
+  const media = readMediaMetadata().find((item) => item.id === req.params.id);
+  if (!media) return res.status(404).end();
+  const filePath = path.join(mediaDirectory, media.fileName);
+  if (!fs.existsSync(filePath)) return res.status(404).end();
+  res.type(media.mimeType).sendFile(filePath);
 });
 
 // ── POST /api/auth/login ──────────────────────────────────────────────────────
@@ -404,6 +452,7 @@ app.get("/api/download/stub", (req, res) => {
 
 // Maps: socketId → { role, deviceCode, sessionId }
 const socketMeta = new Map();
+const deviceAccessState = new Map();
 
 io.on("connection", (socket) => {
   console.log("[Socket] connected:", socket.id);
@@ -411,10 +460,11 @@ io.on("connection", (socket) => {
   // ── CLIENT: register with support code ────────────────────────────────────
   socket.on("register-client", (data) => {
     try {
-      const { supportCode, computerName, osInfo } = data;
+      const { supportCode, computerName, osInfo, unattendedAccess } = data;
       const room = `device-${supportCode}`;
       socket.join(room);
-      socketMeta.set(socket.id, { role: "client", deviceCode: supportCode });
+      socketMeta.set(socket.id, { role: "client", deviceCode: supportCode, unattendedAccess: !!unattendedAccess });
+      deviceAccessState.set(supportCode, { unattendedAccess: !!unattendedAccess });
 
       // Update DB
       if (supabase) {
@@ -436,10 +486,11 @@ io.on("connection", (socket) => {
         computerName,
         osInfo: osInfo || "",
         status: "waiting",
+        unattendedAccess: !!unattendedAccess,
         socketId: socket.id,
       });
 
-      console.log("[Socket] client registered:", supportCode, computerName);
+      console.log("[Socket] client registered:", supportCode, computerName, "unattended:", !!unattendedAccess);
     } catch (err) {
       console.error("[register-client]", err);
     }
@@ -450,8 +501,17 @@ io.on("connection", (socket) => {
     try {
       const { supportCode, sessionId } = data;
       const room = `device-${supportCode}`;
+      const unattendedAccess = deviceAccessState.get(supportCode)?.unattendedAccess === true;
       socketMeta.set(socket.id, { role: "tech", deviceCode: supportCode, sessionId });
       socket.join(room);
+
+      if (unattendedAccess) {
+        io.to(room).emit("connection-approved", { supportCode, sessionId });
+        io.emit("client-status-update", { supportCode, status: "connected", sessionId, unattendedAccess: true });
+        console.log("[Socket] unattended connect approved:", supportCode);
+        return;
+      }
+
       io.to(room).emit("approval-request", { sessionId, techSocketId: socket.id });
       console.log("[Socket] tech connect request:", supportCode);
     } catch (err) {
@@ -527,6 +587,9 @@ io.on("connection", (socket) => {
   socket.on("toggle-blank-screen", (data) => {
     try {
       socket.to(`device-${data.supportCode}`).emit("toggle-blank-screen", { enabled: data.enabled });
+      if (!data.enabled) {
+        socket.to(`device-${data.supportCode}`).emit("change-privacy-media", { mediaType: "css", mediaKey: "default-blue" });
+      }
     } catch (err) { console.error("[toggle-blank-screen]", err); }
   });
 
@@ -536,6 +599,7 @@ io.on("connection", (socket) => {
       socket.to(`device-${data.supportCode}`).emit("change-privacy-media", {
         mediaType: data.mediaType,
         mediaKey: data.mediaKey,
+        mediaUrl: data.mediaUrl,
       });
     } catch (err) { console.error("[change-privacy-media]", err); }
   });
