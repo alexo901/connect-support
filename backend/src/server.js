@@ -625,6 +625,18 @@ io.on("connection", (socket) => {
     } catch (err) { console.error("[update-notes]", err); }
   });
 
+  // ── TECH: explicitly end session ───────────────────────────────────────────
+  socket.on("end-session", (data) => {
+    try {
+      const supportCode = data?.supportCode;
+      if (!supportCode) return;
+      io.to(`device-${supportCode}`).emit("tech-disconnected", { supportCode });
+      console.log("[Socket] tech ended session:", supportCode);
+    } catch (err) {
+      console.error("[end-session]", err);
+    }
+  });
+
   // ── DISCONNECT ─────────────────────────────────────────────────────────────
   socket.on("disconnect", () => {
     try {
@@ -639,9 +651,6 @@ io.on("connection", (socket) => {
             .then(() => {})
             .catch(console.error);
         }
-      }
-      if (meta?.role === "tech" && meta.deviceCode) {
-        io.to(`device-${meta.deviceCode}`).emit("tech-disconnected", { supportCode: meta.deviceCode });
       }
       socketMeta.delete(socket.id);
       console.log("[Socket] disconnected:", socket.id);

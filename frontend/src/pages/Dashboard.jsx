@@ -225,9 +225,13 @@ export default function Dashboard() {
     } catch { notify("Failed to start session","error"); }
   }
   async function disconnectSession() {
-    if (!activeSession) return;
-    if (blankScreen)  toggleBlankScreen(false);
-    if (inputLocked)  toggleInputLock(false);
+    if (!activeSession || !selectedDevice) return;
+    socketRef.current?.emit("end-session", {
+      supportCode: selectedDevice.supportCode,
+      sessionId: activeSession.id,
+    });
+    if (blankScreen) toggleBlankScreen(false);
+    if (inputLocked) toggleInputLock(false);
     try { await fetch(`${API}/api/sessions/${activeSession.id}`, { method: "PATCH", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ ended: true, notes }) }); } catch {}
     setSessionActive(false); setActiveSession(null); setSelectedDevice(null); setBlankScreen(false); setInputLocked(false);
     notify("Session ended","info"); fetchSessions();
