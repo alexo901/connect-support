@@ -591,9 +591,6 @@ window.__RESPOND__ = function(approved) {
         supportCode: CONFIG.supportCode,
         sessionId: data.sessionId,
       });
-      sessionActive = true;
-      updateTrayMenu();
-      startScreenStream();
       approvalWindow.close();
     } else if (title === "REJECTED") {
       socket.emit("client-rejected-connection", { supportCode: CONFIG.supportCode });
@@ -657,6 +654,12 @@ async function startScreenStream() {
 
 function stopScreenStream() {
   if (streamInterval) { clearInterval(streamInterval); streamInterval = null; }
+}
+
+function startApprovedSession() {
+  sessionActive = true;
+  updateTrayMenu();
+  startScreenStream();
 }
 
 // ── Mouse & Keyboard control ──────────────────────────────────────────────────
@@ -812,14 +815,18 @@ function connectSocket() {
         supportCode: CONFIG.supportCode,
         sessionId: data.sessionId,
       });
-      sessionActive = true;
-      updateTrayMenu();
-      startScreenStream();
       return;
     }
 
     console.log("[Agent] Manual approval required.");
     showApprovalWindow(data);
+  });
+
+  // The server sends this to both the technician and client after approval.
+  // Starting here also covers unattended sessions, which have no approval window.
+  socket.on("connection-approved", () => {
+    console.log("[Agent] Connection approved. Starting screen stream.");
+    startApprovedSession();
   });
 
   // ── Tech disconnected ────────────────────────────────────────────────────
