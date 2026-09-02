@@ -87,7 +87,7 @@ export default function Dashboard() {
           const updated = [...prev];
           const old = updated[idx];
           updated[idx] = { ...old, ...data };
-          if (data.status === "waiting" && old.status !== "waiting") setNewClientPopup(updated[idx]);
+          if (data.status === "waiting") setNewClientPopup(updated[idx]);
           return updated;
         }
         return prev;
