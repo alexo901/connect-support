@@ -1,0 +1,90 @@
+@import "tailwindcss";
+
+:root {
+  --cs-bg:         #0d1117;
+  --cs-surface:    #161b22;
+  --cs-border:     #30363d;
+  --cs-accent:     #2563eb;
+  --cs-accent-lt:  #3b82f6;
+  --cs-green:      #22c55e;
+  --cs-yellow:     #eab308;
+  --cs-red:        #ef4444;
+  --cs-text:       #e6edf3;
+  --cs-muted:      #8b949e;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--cs-bg);
+  color: var(--cs-text);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--cs-surface); }
+::-webkit-scrollbar-thumb { background: var(--cs-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #484f58; }
+
+/* animations */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+@keyframes slide-in-right {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes spin-slow {
+  to { transform: rotate(360deg); }
+}
+
+.animate-pulse-dot  { animation: pulse-dot 1.5s ease-in-out infinite; }
+.animate-slide-in   { animation: slide-in-right 0.3s ease-out; }
+.animate-fade-in    { animation: fade-in 0.4s ease-out; }
+.animate-spin-slow  { animation: spin-slow 3s linear infinite; }
+
+/* remote canvas cursor */
+#remote-canvas { cursor: none; }
+#remote-canvas:hover { cursor: none; }
+
+/* modal overlay */
+.modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.7);
+  backdrop-filter: blur(4px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* glass card */
+.glass-card {
+  background: rgba(22, 27, 34, 0.85);
+  border: 1px solid var(--cs-border);
+  backdrop-filter: blur(12px);
+  border-radius: 12px;
+}
+
+/* status badge */
+.status-online   { color: var(--cs-green); }
+.status-waiting  { color: var(--cs-yellow); }
+.status-offline  { color: var(--cs-muted); }
+
+/* code display */
+.support-code {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  letter-spacing: 0.25em;
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--cs-accent-lt);
+}

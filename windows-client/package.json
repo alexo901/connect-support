@@ -1,0 +1,74 @@
+{
+  "name": "connect-support-agent",
+  "version": "1.0.0",
+  "description": "Connect Support Windows Agent — silent remote support client",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron . --server=https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net",
+    "dev": "electron . --dev --server=https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "publish": "electron-forge publish"
+  },
+  "config": {
+    "forge": {
+      "packagerConfig": {
+        "name": "ConnectSupportAgent",
+        "executableName": "ConnectSupportAgent",
+        "icon": "assets/icon",
+        "asar": true,
+        "win32metadata": {
+          "CompanyName": "Connect Support",
+          "FileDescription": "Connect Support Remote Agent",
+          "ProductName": "Connect Support Agent"
+        },
+        "appBundleId": "com.connectsupport.agent",
+        "ignore": [
+          "^/\\.git",
+          "^/node_modules/.cache"
+        ]
+      },
+      "makers": [
+        {
+          "name": "@electron-forge/maker-squirrel",
+          "config": {
+            "name": "ConnectSupportAgent",
+            "setupExe": "ConnectSupportAgent-Setup.exe",
+            "noMsi": true,
+            "shortcutName": "",
+            "createDesktopShortcut": false,
+            "createStartMenuShortcut": false
+          }
+        }
+      ],
+      "publishers": [
+        {
+          "name": "@electron-forge/publisher-github",
+          "config": {
+            "repository": {
+              "owner": "YOUR_ORG",
+              "name": "connect-support"
+            },
+            "draft": false
+          }
+        }
+      ]
+    }
+  },
+  "dependencies": {
+    "@nut-tree-fork/nut-js": "^4.2.6",
+    "screenshot-desktop": "^1.15.0",
+    "socket.io-client": "^4.7.4",
+    "electron-squirrel-startup": "^1.0.0"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.2.0",
+    "@electron-forge/maker-squirrel": "^7.2.0",
+    "@electron-forge/publisher-github": "^7.2.0",
+    "electron": "^29.0.0"
+  },
+  "allowScripts": {
+    "electron@29.4.6": true,
+    "electron-winstaller@5.4.4": true
+  }
+}
