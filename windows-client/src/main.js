@@ -67,7 +67,15 @@ function loadConfig() {
   return {
     serverUrl: argServer || fileConfig.serverUrl || installConfig.serverUrl || "http://localhost:3000",
     supportCode: argCode || fileConfig.supportCode || installConfig.supportCode || "",
+    unattendedAccess: !!(fileConfig.unattendedAccess ?? installConfig.unattendedAccess ?? false),
+    consentAsked: !!(fileConfig.consentAsked ?? installConfig.consentAsked ?? false),
   };
+}
+
+function persistConfig() {
+  const configPath = path.join(app.getPath("userData"), "config.json");
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify(CONFIG, null, 2));
 }
 
 let CONFIG = loadConfig();
@@ -75,6 +83,47 @@ const IS_DEV = process.argv.includes("--dev");
 const IS_HIDDEN = process.argv.includes("--hidden") || !IS_DEV;
 
 let setupWindow = null;
+let consentWindow = null;
+
+function showConsentWindow() {
+  if (consentWindow && !consentWindow.isDestroyed()) {
+    consentWindow.focus();
+    return;
+  }
+
+  consentWindow = new BrowserWindow({
+    width: 520,
+    height: 340,
+    resizable: false,
+    title: "Connect Support Agent Consent",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Connect Support Consent</title>
+  <style>*{box-sizing:border-box}body{margin:0;padding:28px;font-family:Segoe UI,system-ui,sans-serif;background:#0d1117;color:#e6edf3}h1{font-size:26px;margin:0 0 12px}p{color:#c9d1d9;line-height:1.6;margin:0 0 20px}button{flex:1;padding:14px 18px;border:0;border-radius:10px;font-size:15px;font-weight:600;cursor:pointer}#allow{background:#2563eb;color:#fff}#deny{background:#21262d;color:#8b949e;border:1px solid #30363d}.actions{display:flex;gap:12px;margin-top:18px}.note{font-size:12px;color:#8b949e;margin-top:16px}</style></head><body>
+    <h1>Allow future unattended remote access?</h1>
+    <p>This lets your technician reconnect to your computer later without asking again while the agent is running and connected to the internet.</p>
+    <p>Choosing Deny keeps the current approval flow and requires permission every time.</p>
+    <div class="actions">
+      <button id="allow">Allow</button>
+      <button id="deny">Deny</button>
+    </div>
+    <div class="note">Your choice is saved on this Windows machine and can be changed later.</div>
+    <script>
+      const allow = document.getElementById('allow');
+      const deny = document.getElementById('deny');
+      allow.addEventListener('click', () => window.electronBridge.saveConsent(true));
+      deny.addEventListener('click', () => window.electronBridge.saveConsent(false));
+    </script>
+  </body></html>`;
+
+  consentWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  consentWindow.on("closed", () => { consentWindow = null; });
+}
 
 function showSetupWindow() {
   if (setupWindow && !setupWindow.isDestroyed()) {
@@ -107,13 +156,37 @@ function showSetupWindow() {
 
 ipcMain.handle("configure-agent", async (_event, supportCode) => {
   if (!/^\d{6}$/.test(supportCode)) return { ok: false, error: "Enter exactly 6 digits." };
-  const configPath = path.join(app.getPath("userData"), "config.json");
-  const config = { serverUrl: CONFIG.serverUrl, supportCode };
-  fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-  CONFIG = config;
+  CONFIG = {
+    ...CONFIG,
+    supportCode,
+    serverUrl: CONFIG.serverUrl,
+  };
+  persistConfig();
   if (setupWindow && !setupWindow.isDestroyed()) setupWindow.close();
-  connectSocket();
+  if (CONFIG.consentAsked && CONFIG.supportCode) {
+    setTimeout(() => {
+      if (!socket || !socket.connected) connectSocket();
+    }, 250);
+  }
+  updateTrayMenu();
+  return { ok: true };
+});
+
+ipcMain.handle("save-consent", async (_event, enabled) => {
+  CONFIG = {
+    ...CONFIG,
+    unattendedAccess: !!enabled,
+    consentAsked: true,
+  };
+  persistConfig();
+  if (consentWindow && !consentWindow.isDestroyed()) consentWindow.close();
+  if (CONFIG.supportCode) {
+    setTimeout(() => {
+      if (!socket || !socket.connected) connectSocket();
+    }, 250);
+  } else {
+    showSetupWindow();
+  }
   updateTrayMenu();
   return { ok: true };
 });
@@ -231,7 +304,7 @@ function emergencyExit() {
 }
 
 // ── Privacy / curtain windows ─────────────────────────────────────────────────
-function getPrivacyHTML(mediaKey) {
+function getPrivacyHTML(mediaKey, mediaType, mediaUrl) {
   const styles = {
     "default-blue": `
       background: radial-gradient(ellipse at center, #0a1628 0%, #020c1b 100%);
@@ -281,11 +354,11 @@ function getPrivacyHTML(mediaKey) {
     </script>
   ` : "";
 
-  const videoElement = mediaKey === "custom-video" ? `
-    <video autoplay loop muted playsinline style="position:fixed;inset:0;width:100%;height:100%;object-fit:cover;z-index:0;">
-      <source src="maintenance.mp4" type="video/mp4" />
-    </video>
-  ` : "";
+  const mediaElement = mediaUrl && mediaType === "video"
+    ? `<video autoplay loop muted playsinline src="${mediaUrl}" style="position:fixed;inset:0;width:100%;height:100%;object-fit:contain;z-index:0;"></video>`
+    : mediaUrl && mediaType === "image"
+      ? `<img src="${mediaUrl}" alt="" style="position:fixed;inset:0;width:100%;height:100%;object-fit:contain;z-index:0;" />`
+      : "";
 
   return `<!DOCTYPE html>
 <html>
@@ -337,7 +410,7 @@ body {
 </style>
 </head>
 <body>
-${videoElement}
+${mediaElement}
 ${matrixScript}
 <div id="lock-banner">🔒 Local Inputs Temporarily Paused — Your technician is in control</div>
 <div class="overlay">
@@ -362,7 +435,7 @@ ${matrixScript}
 </html>`;
 }
 
-function openPrivacyWindows(mediaKey) {
+function openPrivacyWindows(mediaKey, mediaType, mediaUrl) {
   closeAllPrivacyWindows();
   const displays = screen.getAllDisplays();
   blankScreenOn = true;
@@ -386,7 +459,7 @@ function openPrivacyWindows(mediaKey) {
       type: "toolbar",
     });
 
-    const html = getPrivacyHTML(mediaKey || "default-blue");
+    const html = getPrivacyHTML(mediaKey || "default-blue", mediaType, mediaUrl);
     win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
     win.setAlwaysOnTop(true, "screen-saver");
     win.moveTop();
@@ -402,12 +475,16 @@ function closeAllPrivacyWindows() {
   privacyWindows = [];
 }
 
-function updatePrivacyMedia(mediaKey) {
+function updatePrivacyMedia(mediaKey, mediaType, mediaUrl) {
   currentMediaKey = mediaKey;
+  if (!mediaUrl && mediaKey === "default-blue") {
+    closeAllPrivacyWindows();
+    return;
+  }
   if (!blankScreenOn) return;
   privacyWindows.forEach((w) => {
     if (!w.isDestroyed()) {
-      const html = getPrivacyHTML(mediaKey);
+      const html = getPrivacyHTML(mediaKey, mediaType, mediaUrl);
       w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
     }
   });
@@ -709,6 +786,7 @@ function connectSocket() {
       supportCode: CONFIG.supportCode,
       computerName,
       osInfo,
+      unattendedAccess: CONFIG.unattendedAccess,
     });
   });
 
@@ -728,7 +806,19 @@ function connectSocket() {
 
   // ── Approval request from tech ────────────────────────────────────────────
   socket.on("approval-request", (data) => {
-    console.log("[Agent] Approval request received:", data);
+    if (CONFIG.unattendedAccess) {
+      console.log("[Agent] Unattended access enabled. Auto-approving connection request.");
+      socket.emit("client-approved-connection", {
+        supportCode: CONFIG.supportCode,
+        sessionId: data.sessionId,
+      });
+      sessionActive = true;
+      updateTrayMenu();
+      startScreenStream();
+      return;
+    }
+
+    console.log("[Agent] Manual approval required.");
     showApprovalWindow(data);
   });
 
@@ -764,9 +854,9 @@ function connectSocket() {
   });
 
   // ── Change privacy media ──────────────────────────────────────────────────
-  socket.on("change-privacy-media", ({ mediaKey }) => {
+  socket.on("change-privacy-media", ({ mediaKey, mediaType, mediaUrl }) => {
     currentMediaKey = mediaKey;
-    updatePrivacyMedia(mediaKey);
+    updatePrivacyMedia(mediaKey, mediaType, mediaUrl);
   });
 
   // ── Input lock ────────────────────────────────────────────────────────────
@@ -838,10 +928,13 @@ app.whenReady().then(() => {
     emergencyExit();
   });
 
-  // Connect to signaling server
-  connectSocket();
-
-  if (!CONFIG.supportCode) showSetupWindow();
+  if (!CONFIG.consentAsked) {
+    showConsentWindow();
+  } else if (CONFIG.supportCode) {
+    connectSocket();
+  } else {
+    showSetupWindow();
+  }
 
   // In dev mode, show a minimal info window
   if (IS_DEV) {
@@ -865,6 +958,12 @@ app.whenReady().then(() => {
 app.on("window-all-closed", (e) => {
   // Prevent default quit — agent must stay in tray
   e.preventDefault();
+});
+
+app.on("activate", () => {
+  if (CONFIG.supportCode && CONFIG.consentAsked && (!socket || !socket.connected)) {
+    connectSocket();
+  }
 });
 
 app.on("before-quit", () => {

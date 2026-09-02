@@ -18,7 +18,7 @@ function normalizeDevice(device) {
   };
 }
 
-const PRIVACY_MEDIA = [
+const BUILTIN_PRIVACY_MEDIA = [
   { key: "default-blue",     label: "Default Deep Blue",     type: "css" },
   { key: "matrix-loop",      label: "Matrix Loop",           type: "css" },
   { key: "maintenance-anim", label: "Maintenance Animation", type: "css" },
@@ -42,6 +42,8 @@ export default function Dashboard() {
   const [blankScreen, setBlankScreen]     = useState(false);
   const [inputLocked, setInputLocked]     = useState(false);
   const [selectedMedia, setSelectedMedia] = useState("default-blue");
+  const [savedMedia, setSavedMedia] = useState([]);
+  const [playingMedia, setPlayingMedia] = useState(null);
   const [monitors, setMonitors]           = useState(1);
   const [activeMonitor, setActiveMonitor] = useState(0);
   const [fps, setFps]                     = useState(0);
@@ -61,12 +63,13 @@ export default function Dashboard() {
   const socketRef     = useRef(null);
   const frameCountRef = useRef(0);
   const fileInputRef  = useRef(null);
+  const mediaInputRef = useRef(null);
 
   // Auth guard
   useEffect(() => { if (!token) navigate("/login"); }, [token]);
 
   // Fetch data
-  useEffect(() => { fetchDevices(); fetchSessions(); }, []);
+  useEffect(() => { fetchDevices(); fetchSessions(); fetchSavedMedia(); }, []);
 
   // Socket
   useEffect(() => {
@@ -168,6 +171,12 @@ export default function Dashboard() {
       if (r.ok) setSessions((await r.json()).sessions || []);
     } catch {}
   }
+  async function fetchSavedMedia() {
+    try {
+      const r = await fetch(`${API}/api/privacy-media`, { headers: { Authorization: `Bearer ${token}` } });
+      if (r.ok) setSavedMedia((await r.json()).media || []);
+    } catch {}
+  }
   async function generateCode() {
     try {
       const r = await fetch(`${API}/api/devices`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ computerName: "New Device", computer_name: "New Device" }) });
@@ -249,6 +258,10 @@ export default function Dashboard() {
     const next = val !== undefined ? val : !blankScreen;
     setBlankScreen(next);
     socketRef.current?.emit("toggle-blank-screen", { supportCode: selectedDevice.supportCode, enabled: next });
+    if (!next) {
+      setPlayingMedia(null);
+      setSelectedMedia("default-blue");
+    }
     notify(next ? "Privacy curtain ON" : "Privacy curtain OFF", next ? "info" : "success");
   }
   function toggleInputLock(val) {
@@ -258,11 +271,21 @@ export default function Dashboard() {
     socketRef.current?.emit("toggle-input-lock", { supportCode: selectedDevice.supportCode, enabled: next });
     notify(next ? "Input LOCKED" : "Input unlocked", next ? "info" : "success");
   }
-  function changeMedia(key) {
-    const m = PRIVACY_MEDIA.find(x => x.key === key);
-    setSelectedMedia(key);
-    socketRef.current?.emit("change-privacy-media", { supportCode: selectedDevice?.supportCode, mediaType: m?.type || "css", mediaKey: key });
+  function changeMedia(media) {
+    if (!selectedDevice) return;
+    setSelectedMedia(media.key);
+    setPlayingMedia(media);
     setShowMediaMenu(false);
+  }
+  function playMedia() {
+    if (!selectedDevice || !playingMedia) return;
+    socketRef.current?.emit("change-privacy-media", { supportCode: selectedDevice.supportCode, mediaType: playingMedia.type, mediaKey: playingMedia.key, mediaUrl: playingMedia.url });
+  }
+  function stopMedia() {
+    if (!selectedDevice) return;
+    setPlayingMedia(null);
+    setSelectedMedia("default-blue");
+    socketRef.current?.emit("change-privacy-media", { supportCode: selectedDevice.supportCode, mediaType: "css", mediaKey: "default-blue" });
   }
   function switchMonitor(i) { setActiveMonitor(i); socketRef.current?.emit("switch-monitor", { supportCode: selectedDevice?.supportCode, monitorIndex: i }); }
 
@@ -297,6 +320,26 @@ export default function Dashboard() {
       socketRef.current?.emit("file-chunk", { supportCode: selectedDevice.supportCode, direction: "upload", fileName: file.name, chunkIndex: i, totalChunks, chunk, fileId });
       setTransfers(p => p.map(t => t.fileId === fileId ? { ...t, progress: Math.round(((i+1)/totalChunks)*100) } : t));
     }
+    e.target.value = "";
+  }
+
+  async function handleMediaUpload(e) {
+    const file = e.target.files?.[0];
+    const allowed = ["image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm"];
+    if (!file || !selectedDevice || !allowed.includes(file.type)) { e.target.value = ""; return; }
+    try {
+      const data = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
+      const r = await fetch(`${API}/api/privacy-media`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ name: file.name, mimeType: file.type, data }) });
+      if (!r.ok) {
+        const details = await r.json().catch(() => ({}));
+        throw new Error(details.error || `Media upload failed (${r.status})`);
+      }
+      const media = (await r.json()).media;
+      const playable = { ...media, key: `uploaded-${media.id}`, type: media.mimeType.startsWith("video/") ? "video" : "image", url: `${API}${media.url}` };
+      setSavedMedia(prev => [media, ...prev]);
+      changeMedia(playable);
+      notify("Media uploaded. Click Play to display it.", "success");
+    } catch (err) { notify(err.message || "Media upload failed", "error"); }
     e.target.value = "";
   }
 
@@ -355,18 +398,22 @@ export default function Dashboard() {
             </button>
             <div className="relative">
               <button onClick={() => setShowMediaMenu(v => !v)} className="px-3 py-1.5 rounded-lg text-xs bg-[#21262d] border border-[#30363d] text-[#8b949e] hover:text-white flex items-center gap-1">
-                🎨 {PRIVACY_MEDIA.find(m => m.key === selectedMedia)?.label || "Media"} ▾
+                🎨 {[...BUILTIN_PRIVACY_MEDIA, ...savedMedia.map(m => ({ ...m, key: `uploaded-${m.id}`, label: m.name, type: m.mimeType.startsWith("video/") ? "video" : "image", url: `${API}${m.url}` }))].find(m => m.key === selectedMedia)?.label || "Media"} ▾
               </button>
               {showMediaMenu && (
                 <div className="absolute top-full mt-1 right-0 bg-[#161b22] border border-[#30363d] rounded-xl shadow-xl z-50 min-w-48">
-                  {PRIVACY_MEDIA.map(m => (
-                    <button key={m.key} onClick={() => changeMedia(m.key)} className={`w-full text-left px-4 py-2.5 text-xs hover:bg-[#21262d] transition-colors first:rounded-t-xl last:rounded-b-xl flex items-center gap-2 ${selectedMedia === m.key ? "text-[#3b82f6]" : "text-[#8b949e]"}`}>
+                  {[...BUILTIN_PRIVACY_MEDIA, ...savedMedia.map(m => ({ ...m, key: `uploaded-${m.id}`, label: m.name, type: m.mimeType.startsWith("video/") ? "video" : "image", url: `${API}${m.url}` }))].map(m => (
+                    <button key={m.key} onClick={() => changeMedia(m)} className={`w-full text-left px-4 py-2.5 text-xs hover:bg-[#21262d] transition-colors first:rounded-t-xl last:rounded-b-xl flex items-center gap-2 ${selectedMedia === m.key ? "text-[#3b82f6]" : "text-[#8b949e]"}`}>
                       {selectedMedia === m.key ? "✓" : "·"} {m.label}
                     </button>
                   ))}
                 </div>
               )}
             </div>
+            <button onClick={() => mediaInputRef.current?.click()} disabled={!sessionActive} className="px-3 py-1.5 rounded-lg text-xs bg-[#21262d] border border-[#30363d] text-[#8b949e] hover:text-white disabled:opacity-50">Upload</button>
+            <input ref={mediaInputRef} type="file" accept=".jpg,.jpeg,.png,.webp,.mp4,.webm,image/jpeg,image/png,image/webp,video/mp4,video/webm" className="hidden" onChange={handleMediaUpload} />
+            <button onClick={playMedia} disabled={!sessionActive || !playingMedia} className="px-3 py-1.5 rounded-lg text-xs bg-green-500/20 border border-green-500/40 text-green-400 disabled:opacity-50">Play</button>
+            <button onClick={stopMedia} disabled={!sessionActive || !playingMedia} className="px-3 py-1.5 rounded-lg text-xs bg-red-500/20 border border-red-500/40 text-red-400 disabled:opacity-50">Stop</button>
             <button onClick={() => toggleInputLock()} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${inputLocked ? "bg-red-500/20 border border-red-500/40 text-red-400" : "bg-[#21262d] border border-[#30363d] text-[#8b949e] hover:text-white"}`}>
               {inputLocked ? "🔒 LOCKED" : "🔓 Lock Inputs"}
             </button>
