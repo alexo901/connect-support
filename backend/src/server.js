@@ -435,7 +435,7 @@ app.get("/api/download/installer", async (req, res) => {
   }
 
   const installerUrl =
-    "https://raw.githubusercontent.com/alexo901/connect-support/main/installers/Connect%20Support%20Setup.exe";
+    "https://github.com/alexo901/connect-support/releases/download/v1.0.0/Connect.SupportWeb.Setup.1.0.0.exe";
 
   return res.redirect(installerUrl);
 });
