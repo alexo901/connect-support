@@ -902,7 +902,143 @@ app.patch(
 // DOWNLOAD ROUTES
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Step 1: Verify code and return installer URL
+// Exact installer files available in Azure Blob Storage
+const DOWNLOADABLE_INSTALLER_FILES = new Set([
+  "Connect Support Web Setup 1.0.0.exe",
+  "connect-support-agent-1.0.0-x64.nsis.7z",
+  "latest.yml",
+]);
+
+function getInstallerContentType(fileName) {
+  const extension = path.extname(fileName).toLowerCase();
+
+  switch (extension) {
+    case ".exe":
+      return "application/octet-stream";
+
+    case ".7z":
+      return "application/x-7z-compressed";
+
+    case ".yml":
+    case ".yaml":
+      return "text/yaml; charset=utf-8";
+
+    default:
+      return "application/octet-stream";
+  }
+}
+
+async function streamInstallerFile(
+  blobName,
+  req,
+  res,
+  options = {}
+) {
+  try {
+    if (!blobServiceClient) {
+      return res.status(503).json({
+        error: "Installer storage is not configured.",
+      });
+    }
+
+    const containerClient =
+      blobServiceClient.getContainerClient(
+        AZURE_STORAGE_CONTAINER
+      );
+
+    const blockBlobClient =
+      containerClient.getBlockBlobClient(
+        blobName
+      );
+
+    const exists =
+      await blockBlobClient.exists();
+
+    if (!exists) {
+      console.error(
+        "[Installer] Blob not found:",
+        AZURE_STORAGE_CONTAINER,
+        blobName
+      );
+
+      return res.status(404).json({
+        error: "Installer file not found",
+        file: blobName,
+      });
+    }
+
+    const downloadResponse =
+      await blockBlobClient.download(0);
+
+    if (!downloadResponse.readableStreamBody) {
+      return res.status(500).json({
+        error: "Could not read installer file",
+      });
+    }
+
+    res.setHeader(
+      "Content-Type",
+      getInstallerContentType(blobName)
+    );
+
+    res.setHeader(
+      "Cache-Control",
+      options.noStore
+        ? "no-store"
+        : "public, max-age=3600"
+    );
+
+    if (options.attachment) {
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${options.downloadName || blobName}"`
+      );
+    }
+
+    if (downloadResponse.contentLength) {
+      res.setHeader(
+        "Content-Length",
+        downloadResponse.contentLength
+      );
+    }
+
+    downloadResponse.readableStreamBody.on(
+      "error",
+      (err) => {
+        console.error(
+          "[Installer Stream Error]",
+          blobName,
+          err
+        );
+
+        if (!res.headersSent) {
+          res.status(500).end();
+        } else {
+          res.end();
+        }
+      }
+    );
+
+    downloadResponse.readableStreamBody.pipe(res);
+  } catch (err) {
+    console.error(
+      "[streamInstallerFile]",
+      blobName,
+      err
+    );
+
+    if (!res.headersSent) {
+      return res.status(500).json({
+        error: "Could not download installer file",
+        details: err.message,
+      });
+    }
+
+    res.end();
+  }
+}
+
+// ── Step 1: Verify support code ───────────────────────────────────────────────
 
 app.get(
   "/api/download",
@@ -956,7 +1092,7 @@ app.get(
   }
 );
 
-// Step 2: Securely stream installer from PRIVATE Azure Blob Storage
+// ── Step 2: Download the small web installer ─────────────────────────────────
 
 app.get(
   "/api/download/installer",
@@ -981,83 +1117,16 @@ app.get(
         });
       }
 
-      if (!blobServiceClient) {
-        return res.status(503).json({
-          error:
-            "Installer storage is not configured.",
-        });
-      }
-
-      const containerClient =
-        blobServiceClient.getContainerClient(
-          AZURE_STORAGE_CONTAINER
-        );
-
-      const blockBlobClient =
-        containerClient.getBlockBlobClient(
-          INSTALLER_BLOB_NAME
-        );
-
-      const exists =
-        await blockBlobClient.exists();
-
-      if (!exists) {
-        console.error(
-          "[Installer] Blob not found:",
-          AZURE_STORAGE_CONTAINER,
-          INSTALLER_BLOB_NAME
-        );
-
-        return res.status(404).json({
-          error: "Installer file not found",
-        });
-      }
-
-      const downloadResponse =
-        await blockBlobClient.download(0);
-
-      res.setHeader(
-        "Content-Type",
-        "application/octet-stream"
-      );
-
-      res.setHeader(
-        "Content-Disposition",
-        'attachment; filename="Connect Support Setup.exe"'
-      );
-
-      res.setHeader(
-        "Cache-Control",
-        "no-store"
-      );
-
-      if (
-        !downloadResponse.readableStreamBody
-      ) {
-        return res.status(500).json({
-          error:
-            "Could not read installer file",
-        });
-      }
-
-      downloadResponse.readableStreamBody.on(
-        "error",
-        (err) => {
-          console.error(
-            "[Installer Stream Error]",
-            err
-          );
-
-          if (!res.headersSent) {
-            res.status(500).end();
-          } else {
-            res.end();
-          }
+      await streamInstallerFile(
+        INSTALLER_BLOB_NAME,
+        req,
+        res,
+        {
+          attachment: true,
+          downloadName:
+            "Connect Support Setup.exe",
+          noStore: true,
         }
-      );
-
-      downloadResponse.readableStreamBody.pipe(
-        res
       );
     } catch (err) {
       console.error(
@@ -1067,14 +1136,55 @@ app.get(
 
       if (!res.headersSent) {
         return res.status(500).json({
-          error:
-            "Could not download installer",
+          error: "Could not download installer",
           details: err.message,
         });
       }
 
       res.end();
     }
+  }
+);
+
+// ── Step 3: NSIS Web installer package files ─────────────────────────────────
+//
+// Electron/NSIS installer automatically requests files like:
+// /downloads/connect-support-agent-1.0.0-x64.nsis.7z
+//
+// These routes proxy those files from Azure Blob Storage.
+
+app.get(
+  "/downloads/:fileName",
+  async (req, res) => {
+    const fileName =
+      decodeURIComponent(
+        req.params.fileName || ""
+      );
+
+    if (
+      !DOWNLOADABLE_INSTALLER_FILES.has(
+        fileName
+      )
+    ) {
+      console.warn(
+        "[Installer] Invalid download request:",
+        fileName
+      );
+
+      return res.status(404).json({
+        error: "Installer file not found",
+      });
+    }
+
+    await streamInstallerFile(
+      fileName,
+      req,
+      res,
+      {
+        attachment: false,
+        noStore: false,
+      }
+    );
   }
 );
 
