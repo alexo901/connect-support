@@ -98,7 +98,19 @@ export default function Dashboard() {
     socket.on("connection-rejected", () => { notify("Client declined the request","error"); });
 
     socket.on("stream-frame", (data) => {
-      if (!canvasRef.current) return;
+      console.log("[Dashboard] Frame received", {
+        supportCode: data?.supportCode,
+        sessionId: data?.sessionId,
+        bytes: data?.frame?.length || 0,
+      });
+      if (!data?.frame || !/^[A-Za-z0-9+/]+={0,2}$/.test(data.frame)) {
+        console.warn("[Dashboard] Invalid frame payload");
+        return;
+      }
+      if (!canvasRef.current) {
+        console.warn("[Dashboard] Frame received before canvas mounted");
+        return;
+      }
       frameCountRef.current++;
       if (data.monitors) setMonitors(data.monitors);
       const img = new window.Image();
@@ -111,6 +123,7 @@ export default function Dashboard() {
         }
         ctx.drawImage(img, 0, 0);
       };
+      img.onerror = () => console.error("[Dashboard] JPEG frame could not be decoded");
       img.src = `data:image/jpeg;base64,${data.frame}`;
     });
 
@@ -162,8 +175,11 @@ export default function Dashboard() {
   async function fetchDevices() {
     try {
       const r = await fetch(`${API}/api/devices`, { headers: { Authorization: `Bearer ${token}` } });
-      if (r.ok) setDevices(((await r.json()).devices || []).map(normalizeDevice));
-    } catch {}
+      const data = await r.json().catch(() => ({}));
+      if (r.status === 401) { localStorage.removeItem("cs_token"); navigate("/login"); return; }
+      if (r.ok) setDevices((data.devices || []).map(normalizeDevice));
+      else notify(data.error || `Could not load devices (${r.status})`, "error");
+    } catch { notify("Could not reach the support server", "error"); }
   }
   async function fetchSessions() {
     try {
@@ -181,8 +197,9 @@ export default function Dashboard() {
     try {
       const r = await fetch(`${API}/api/devices`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ computerName: "New Device", computer_name: "New Device" }) });
       if (r.ok) { const d = await r.json(); const device = normalizeDevice(d.device); setDevices(p => [device, ...p]); notify(`Code: ${device.supportCode}`, "success"); }
-      else { const d = await r.json(); notify(d.error || "Failed to generate code", "error"); }
-    } catch { notify("Failed to generate code","error"); }
+      else if (r.status === 401) { localStorage.removeItem("cs_token"); navigate("/login"); }
+      else { const d = await r.json().catch(() => ({})); notify(d.details ? `${d.error}: ${d.details}` : (d.error || `Failed to generate code (${r.status})`), "error"); }
+    } catch { notify("Could not reach the support server", "error"); }
   }
   function startRename(device) {
     setEditingDeviceId(device.id);

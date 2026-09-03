@@ -207,14 +207,15 @@ app.post("/api/support/verify", async (req, res) => {
 app.get("/api/devices", requireAuth, async (req, res) => {
   try {
     if (!supabase) return res.json({ devices: [] });
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("devices")
       .select("*")
       .order("created_at", { ascending: false });
+    if (error) throw error;
     return res.json({ devices: (data || []).map(formatDevice) });
   } catch (err) {
-    console.error("[GET /api/devices]", err);
-    return res.status(500).json({ error: "Internal server error" });
+    console.error("[GET /api/devices]", err.message || err);
+    return res.status(500).json({ error: "Could not load devices", details: err.message || "Database request failed" });
   }
 });
 
@@ -251,8 +252,8 @@ app.post("/api/devices", requireAuth, async (req, res) => {
     if (error) throw error;
     return res.status(201).json({ device: formatDevice(data) });
   } catch (err) {
-    console.error("[POST /api/devices]", err);
-    return res.status(500).json({ error: "Internal server error" });
+    console.error("[POST /api/devices]", err.message || err);
+    return res.status(500).json({ error: "Could not create support token", details: err.message || "Database request failed" });
   }
 });
 
@@ -544,7 +545,24 @@ io.on("connection", (socket) => {
   // ── STREAM FRAME ───────────────────────────────────────────────────────────
   socket.on("stream-frame", (data) => {
     try {
-      socket.to(`device-${data.supportCode}`).emit("stream-frame", data);
+      const meta = socketMeta.get(socket.id);
+      const supportCode = data?.supportCode;
+      if (meta?.role !== "client" || !supportCode || meta.deviceCode !== supportCode || typeof data.frame !== "string" || !data.frame) {
+        console.warn("[Backend] Invalid stream frame", { socketId: socket.id, supportCode, role: meta?.role, deviceCode: meta?.deviceCode });
+        return;
+      }
+      const room = `device-${supportCode}`;
+      console.log("[Backend] Frame received", { supportCode, sessionId: data.sessionId, bytes: data.frame.length });
+      const technicianSockets = [...(io.sockets.adapter.rooms.get(room) || [])].filter((socketId) => {
+        const targetMeta = socketMeta.get(socketId);
+        return targetMeta?.role === "tech" && (!data.sessionId || targetMeta.sessionId === data.sessionId);
+      });
+      if (!technicianSockets.length) {
+        console.warn("[Backend] No matching technician socket for frame", { room, sessionId: data.sessionId });
+        return;
+      }
+      io.to(technicianSockets).emit("stream-frame", data);
+      console.log("[Backend] Frame forwarded", { room, sessionId: data.sessionId, targets: technicianSockets.length });
     } catch (err) { console.error("[stream-frame]", err); }
   });
 
@@ -630,7 +648,22 @@ io.on("connection", (socket) => {
     try {
       const supportCode = data?.supportCode;
       if (!supportCode) return;
-      io.to(`device-${supportCode}`).emit("tech-disconnected", { supportCode });
+      const meta = socketMeta.get(socket.id);
+      if (meta?.role !== "tech" || meta.deviceCode !== supportCode) return;
+      io.to(`device-${supportCode}`).emit("tech-disconnected", { supportCode, intentional: true });
+      io.emit("client-status-update", {
+        supportCode,
+        status: "waiting",
+        unattendedAccess: deviceAccessState.get(supportCode)?.unattendedAccess === true,
+      });
+      if (supabase) {
+        supabase
+          .from("devices")
+          .update({ status: "waiting", last_seen: new Date().toISOString() })
+          .eq("support_code", supportCode)
+          .then(() => {})
+          .catch(console.error);
+      }
       console.log("[Socket] tech ended session:", supportCode);
     } catch (err) {
       console.error("[end-session]", err);

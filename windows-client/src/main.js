@@ -124,6 +124,7 @@ let activeMonitor = 0;
 let inputLocked = false;
 let blankScreenOn = false;
 let currentMediaKey = "default-blue";
+let activeSessionId = null;
 
 // ── Single instance ───────────────────────────────────────────────────────────
 const gotLock = app.requestSingleInstanceLock();
@@ -578,6 +579,7 @@ function endSession() {
   console.log("[Agent] Ending session");
 
   sessionActive = false;
+  activeSessionId = null;
 
   stopScreenStream();
   closeAllPrivacyWindows();
@@ -883,6 +885,12 @@ Decline
 async function startScreenStream() {
   stopScreenStream();
 
+  console.log("[Client] Starting screen capture loop", {
+    supportCode: CONFIG.supportCode,
+    sessionId: activeSessionId,
+    activeMonitor,
+  });
+
   let screenshot;
 
   try {
@@ -897,6 +905,7 @@ async function startScreenStream() {
 
   const displays = screen.getAllDisplays();
   const numMonitors = displays.length;
+  let emittedFrames = 0;
 
   streamInterval = setInterval(async () => {
     if (
@@ -914,6 +923,8 @@ async function startScreenStream() {
         const screenList =
           await screenshot.listDisplays();
 
+        if (!screenList.length) throw new Error("No displays returned by screenshot-desktop");
+
         const targetIdx = Math.min(
           activeMonitor,
           screenList.length - 1
@@ -930,14 +941,29 @@ async function startScreenStream() {
         });
       }
 
+      const frame = imgBuffer.toString("base64");
+      if (!frame) throw new Error("Screenshot returned an empty frame");
+
       socket.emit("stream-frame", {
         supportCode: CONFIG.supportCode,
-        frame: imgBuffer.toString("base64"),
+        sessionId: activeSessionId,
+        frame,
         monitors: numMonitors,
         activeMonitor,
       });
 
-    } catch {}
+      emittedFrames++;
+      if (emittedFrames === 1 || emittedFrames % 50 === 0) {
+        console.log("[Client] Frame captured/emitted", {
+          count: emittedFrames,
+          bytes: imgBuffer.length,
+          sessionId: activeSessionId,
+        });
+      }
+
+    } catch (err) {
+      console.error("[Client] Screen capture failed:", err.message);
+    }
   }, 100);
 }
 
@@ -1167,17 +1193,21 @@ function connectSocket() {
     showApprovalWindow(data);
   });
 
-  socket.on("connection-approved", () => {
+  socket.on("connection-approved", ({ sessionId } = {}) => {
     console.log(
       "[Agent] Connection approved. Starting screen stream."
     );
 
+    activeSessionId = sessionId || activeSessionId;
     startApprovedSession();
   });
 
-  socket.on("tech-disconnected", () => {
-    console.log("[Agent] Tech disconnected");
-
+  socket.on("tech-disconnected", ({ intentional } = {}) => {
+    if (!intentional) {
+      console.warn("[Agent] Ignoring unintentional/legacy tech disconnect event");
+      return;
+    }
+    console.log("[Agent] Tech intentionally ended session");
     endSession();
   });
 
