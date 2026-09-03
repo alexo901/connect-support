@@ -381,70 +381,63 @@ app.patch("/api/sessions/:id", requireAuth, async (req, res) => {
 // ── GET /api/download ─────────────────────────────────────────────────────────
 app.get("/api/download", async (req, res) => {
   const code = req.query.code;
+
   if (!code || !/^\d{6}$/.test(code)) {
     return res.status(400).json({ error: "Invalid support code" });
   }
 
-  const serverUrl = process.env.SERVER_URL || `http://localhost:${PORT}`;
-
   if (supabase) {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("devices")
       .select("id")
       .eq("support_code", code)
       .single();
-    if (!data) return res.status(404).json({ error: "Support code not found" });
+
+    if (error || !data) {
+      return res.status(404).json({ error: "Support code not found" });
+    }
   }
 
   return res.json({
     valid: true,
     code,
-    fileName: `ConnectSupport-Setup-${code}.ps1`,
-    downloadUrl: `/api/download/stub?code=${code}`,
-    serverUrl,
+    fileName: "Connect Support Setup.exe",
+    downloadUrl: `/api/download/installer?code=${encodeURIComponent(code)}`,
     instructions: [
-      "Download and run the installer.",
-      "The agent installs silently with no visible window.",
-      "It automatically connects using your support code.",
-      "Wait for your technician to start the session.",
+      "Download the Connect Support Setup file.",
+      "Run the installer.",
+      "The remaining application files will download automatically.",
+      "The Connect Support Agent will start after installation.",
     ],
   });
 });
 
-// ── GET /api/download/stub ────────────────────────────────────────────────────
-app.get("/api/download/stub", (req, res) => {
-  const code = req.query.code || "000000";
-  const serverUrl = process.env.SERVER_URL || `http://localhost:${PORT}`;
 
-  const lines = [
-    "# Connect Support Agent Installer",
-    `# Support Code: ${code}`,
-    "# Auto-generated installer stub",
-    "",
-    "$ErrorActionPreference = 'Stop'",
-    `$serverUrl = '${serverUrl}'`,
-    `$supportCode = '${code}'`,
-    "$agentDir = Join-Path $env:LOCALAPPDATA 'ConnectSupport'",
-    "$agentExe = Join-Path $agentDir 'ConnectSupportAgent.exe'",
-    "$agentZip = Join-Path $env:TEMP 'cs-agent.zip'",
-    "",
-    "Write-Host 'Connect Support - Installing agent...'",
-    "New-Item -ItemType Directory -Force -Path $agentDir | Out-Null",
-    "$releaseUrl = 'https://github.com/YOUR_ORG/connect-support/releases/latest/download/ConnectSupportAgent-win32-x64.zip'",
-    "Invoke-WebRequest -Uri $releaseUrl -OutFile $agentZip -UseBasicParsing",
-    "Expand-Archive -Path $agentZip -DestinationPath $agentDir -Force",
-    "Remove-Item $agentZip",
-    "$config = @{ serverUrl = $serverUrl; supportCode = $supportCode } | ConvertTo-Json",
-    "Set-Content -Path (Join-Path $agentDir 'config.json') -Value $config",
-    "$regPath = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'",
-    "Set-ItemProperty -Path $regPath -Name 'ConnectSupportAgent' -Value \"$agentExe --hidden\"",
-    "Start-Process -FilePath $agentExe -ArgumentList '--hidden','--code',$supportCode,'--server',$serverUrl -WindowStyle Hidden",
-    "Write-Host 'Connect Support agent installed and running silently.'",
-  ];
+// ── GET /api/download/installer ───────────────────────────────────────────────
+// Redirect the client to the small NSIS Web installer stored in GitHub.
+app.get("/api/download/installer", async (req, res) => {
+  const code = req.query.code;
 
-  res.setHeader("Content-Type", "application/octet-stream");
-  res.setHeader("Content-Disposition", `attachment; filename="ConnectSupport-Setup-${code}.ps1"`);
-  res.send(lines.join("\n"));
+  if (!code || !/^\d{6}$/.test(code)) {
+    return res.status(400).json({ error: "Invalid support code" });
+  }
+
+  if (supabase) {
+    const { data, error } = await supabase
+      .from("devices")
+      .select("id")
+      .eq("support_code", code)
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ error: "Support code not found" });
+    }
+  }
+
+  const installerUrl =
+    "https://raw.githubusercontent.com/alexo901/connect-support/main/installers/Connect%20Support%20Setup.exe";
+
+  return res.redirect(installerUrl);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
