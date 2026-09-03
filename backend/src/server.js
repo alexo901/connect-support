@@ -22,11 +22,19 @@ const path = require("path");
 // ── Environment ───────────────────────────────────────────────────────────────
 
 const PORT = Number(process.env.PORT) || 4000;
-const JWT_SECRET = process.env.JWT_SECRET || "connect-support-secret";
-const ADMIN_USER = process.env.ADMIN_USER || "admin";
-const ADMIN_PASS = process.env.ADMIN_PASS || "admin123";
 
-const SUPABASE_URL = process.env.SUPABASE_URL || "";
+const JWT_SECRET =
+  process.env.JWT_SECRET || "connect-support-secret";
+
+const ADMIN_USER =
+  process.env.ADMIN_USER || "admin";
+
+const ADMIN_PASS =
+  process.env.ADMIN_PASS || "admin123";
+
+const SUPABASE_URL =
+  process.env.SUPABASE_URL || "";
+
 const SUPABASE_KEY =
   process.env.SUPABASE_SERVICE_KEY ||
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
@@ -55,11 +63,13 @@ let blobServiceClient = null;
 
 try {
   if (AZURE_STORAGE_CONNECTION_STRING) {
-    const { BlobServiceClient } = require("@azure/storage-blob");
+    const { BlobServiceClient } =
+      require("@azure/storage-blob");
 
-    blobServiceClient = BlobServiceClient.fromConnectionString(
-      AZURE_STORAGE_CONNECTION_STRING
-    );
+    blobServiceClient =
+      BlobServiceClient.fromConnectionString(
+        AZURE_STORAGE_CONNECTION_STRING
+      );
 
     console.log("[Azure Storage] Blob Storage configured");
   } else {
@@ -68,7 +78,10 @@ try {
     );
   }
 } catch (err) {
-  console.error("[Azure Storage] Could not initialize:", err.message);
+  console.error(
+    "[Azure Storage] Could not initialize:",
+    err.message
+  );
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -91,7 +104,7 @@ async function validateSupportCode(code) {
     return false;
   }
 
-  // If no Supabase is configured, allow valid 6-digit codes for development.
+  // Development mode without Supabase
   if (!supabase) {
     return true;
   }
@@ -116,13 +129,23 @@ app.use(
   })
 );
 
-app.use(express.json({ limit: "100mb" }));
+app.use(
+  express.json({
+    limit: "100mb",
+  })
+);
 
 // ── Privacy Media ─────────────────────────────────────────────────────────────
 
-const mediaDirectory = path.join(__dirname, "..", "privacy-media");
+const mediaDirectory = path.join(
+  __dirname,
+  "..",
+  "privacy-media"
+);
 
-fs.mkdirSync(mediaDirectory, { recursive: true });
+fs.mkdirSync(mediaDirectory, {
+  recursive: true,
+});
 
 function readMediaMetadata() {
   return fs
@@ -131,14 +154,21 @@ function readMediaMetadata() {
     .map((name) => {
       try {
         return JSON.parse(
-          fs.readFileSync(path.join(mediaDirectory, name), "utf8")
+          fs.readFileSync(
+            path.join(mediaDirectory, name),
+            "utf8"
+          )
         );
       } catch {
         return null;
       }
     })
     .filter(Boolean)
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt) -
+        new Date(a.createdAt)
+    );
 }
 
 // ── HTTP Server ───────────────────────────────────────────────────────────────
@@ -197,324 +227,389 @@ app.get("/api/health", (req, res) => {
 
 // ── Privacy Media ─────────────────────────────────────────────────────────────
 
-app.get("/api/privacy-media", requireAuth, (req, res) => {
-  return res.json({
-    media: readMediaMetadata(),
-  });
-});
+app.get(
+  "/api/privacy-media",
+  requireAuth,
+  (req, res) => {
+    return res.json({
+      media: readMediaMetadata(),
+    });
+  }
+);
 
-app.post("/api/privacy-media", requireAuth, (req, res) => {
-  try {
-    const { name, mimeType, data } = req.body;
+app.post(
+  "/api/privacy-media",
+  requireAuth,
+  (req, res) => {
+    try {
+      const { name, mimeType, data } = req.body;
 
-    const allowedTypes = new Set([
-      "image/jpeg",
-      "image/png",
-      "image/webp",
-      "video/mp4",
-      "video/webm",
-    ]);
+      const allowedTypes = new Set([
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "video/mp4",
+        "video/webm",
+      ]);
 
-    if (
-      !name ||
-      !allowedTypes.has(mimeType) ||
-      typeof data !== "string"
-    ) {
-      return res.status(400).json({
-        error:
-          "Supported media: JPG, JPEG, PNG, WEBP, MP4, and WEBM.",
+      if (
+        !name ||
+        !allowedTypes.has(mimeType) ||
+        typeof data !== "string"
+      ) {
+        return res.status(400).json({
+          error:
+            "Supported media: JPG, JPEG, PNG, WEBP, MP4, and WEBM.",
+        });
+      }
+
+      const id = uuidv4();
+
+      const extension =
+        path.extname(name).toLowerCase() ||
+        (mimeType.startsWith("video/")
+          ? ".mp4"
+          : ".jpg");
+
+      const fileName = `${id}${extension}`;
+
+      const content = Buffer.from(
+        data.replace(
+          /^data:[^;]+;base64,/,
+          ""
+        ),
+        "base64"
+      );
+
+      fs.writeFileSync(
+        path.join(
+          mediaDirectory,
+          fileName
+        ),
+        content
+      );
+
+      const media = {
+        id,
+        name,
+        mimeType,
+        fileName,
+        createdAt: new Date().toISOString(),
+        url: `/api/privacy-media/${id}/content`,
+      };
+
+      fs.writeFileSync(
+        path.join(
+          mediaDirectory,
+          `${id}.json`
+        ),
+        JSON.stringify(media)
+      );
+
+      return res.status(201).json({
+        media,
+      });
+    } catch (err) {
+      console.error(
+        "[POST /api/privacy-media]",
+        err
+      );
+
+      return res.status(500).json({
+        error: "Could not save media",
       });
     }
+  }
+);
 
-    const id = uuidv4();
-
-    const extension =
-      path.extname(name).toLowerCase() ||
-      (mimeType.startsWith("video/") ? ".mp4" : ".jpg");
-
-    const fileName = `${id}${extension}`;
-
-    const content = Buffer.from(
-      data.replace(/^data:[^;]+;base64,/, ""),
-      "base64"
+app.get(
+  "/api/privacy-media/:id/content",
+  (req, res) => {
+    const media = readMediaMetadata().find(
+      (item) => item.id === req.params.id
     );
 
-    fs.writeFileSync(
-      path.join(mediaDirectory, fileName),
-      content
+    if (!media) {
+      return res.status(404).end();
+    }
+
+    const filePath = path.join(
+      mediaDirectory,
+      media.fileName
     );
 
-    const media = {
-      id,
-      name,
-      mimeType,
-      fileName,
-      createdAt: new Date().toISOString(),
-      url: `/api/privacy-media/${id}/content`,
-    };
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).end();
+    }
 
-    fs.writeFileSync(
-      path.join(mediaDirectory, `${id}.json`),
-      JSON.stringify(media)
-    );
-
-    return res.status(201).json({
-      media,
-    });
-  } catch (err) {
-    console.error("[POST /api/privacy-media]", err);
-
-    return res.status(500).json({
-      error: "Could not save media",
-    });
+    return res
+      .type(media.mimeType)
+      .sendFile(filePath);
   }
-});
-
-app.get("/api/privacy-media/:id/content", (req, res) => {
-  const media = readMediaMetadata().find(
-    (item) => item.id === req.params.id
-  );
-
-  if (!media) {
-    return res.status(404).end();
-  }
-
-  const filePath = path.join(
-    mediaDirectory,
-    media.fileName
-  );
-
-  if (!fs.existsSync(filePath)) {
-    return res.status(404).end();
-  }
-
-  res.type(media.mimeType).sendFile(filePath);
-});
+);
 
 // ── Login ─────────────────────────────────────────────────────────────────────
 
-app.post("/api/auth/login", async (req, res) => {
-  try {
-    const { username, password } = req.body;
+app.post(
+  "/api/auth/login",
+  async (req, res) => {
+    try {
+      const { username, password } = req.body;
 
-    if (!username || !password) {
-      return res.status(400).json({
-        error: "Missing credentials",
-      });
-    }
-
-    let valid = false;
-    let techId = "env-admin";
-
-    if (supabase) {
-      const { data } = await supabase
-        .from("technicians")
-        .select("id, password_hash")
-        .eq("username", username)
-        .single();
-
-      if (data) {
-        valid = await bcrypt.compare(
-          password,
-          data.password_hash
-        );
-
-        techId = data.id;
+      if (!username || !password) {
+        return res.status(400).json({
+          error: "Missing credentials",
+        });
       }
-    }
 
-    if (!valid) {
-      valid =
-        username === ADMIN_USER &&
-        password === ADMIN_PASS;
-    }
+      let valid = false;
+      let techId = "env-admin";
 
-    if (!valid) {
-      return res.status(401).json({
-        error: "Invalid credentials",
-      });
-    }
+      if (supabase) {
+        const { data } = await supabase
+          .from("technicians")
+          .select("id, password_hash")
+          .eq("username", username)
+          .single();
 
-    const token = jwt.sign(
-      {
-        sub: techId,
+        if (data) {
+          valid = await bcrypt.compare(
+            password,
+            data.password_hash
+          );
+
+          techId = data.id;
+        }
+      }
+
+      if (!valid) {
+        valid =
+          username === ADMIN_USER &&
+          password === ADMIN_PASS;
+      }
+
+      if (!valid) {
+        return res.status(401).json({
+          error: "Invalid credentials",
+        });
+      }
+
+      const token = jwt.sign(
+        {
+          sub: techId,
+          username,
+          role: "technician",
+        },
+        JWT_SECRET,
+        {
+          expiresIn: "12h",
+        }
+      );
+
+      return res.json({
+        token,
         username,
-        role: "technician",
-      },
-      JWT_SECRET,
-      {
-        expiresIn: "12h",
-      }
-    );
+      });
+    } catch (err) {
+      console.error(
+        "[/api/auth/login]",
+        err
+      );
 
-    return res.json({
-      token,
-      username,
-    });
-  } catch (err) {
-    console.error("[/api/auth/login]", err);
-
-    return res.status(500).json({
-      error: "Internal server error",
-    });
+      return res.status(500).json({
+        error: "Internal server error",
+      });
+    }
   }
-});
+);
 
 // ── Verify Support Code ───────────────────────────────────────────────────────
 
-app.post("/api/support/verify", async (req, res) => {
-  try {
-    const { code } = req.body;
+app.post(
+  "/api/support/verify",
+  async (req, res) => {
+    try {
+      const { code } = req.body;
 
-    if (!code || !/^\d{6}$/.test(String(code))) {
-      return res.status(400).json({
-        error: "Invalid support code",
-      });
-    }
+      if (
+        !code ||
+        !/^\d{6}$/.test(String(code))
+      ) {
+        return res.status(400).json({
+          error: "Invalid support code",
+        });
+      }
 
-    if (!supabase) {
+      if (!supabase) {
+        return res.json({
+          valid: true,
+          device: {
+            supportCode: String(code),
+            status: "offline",
+          },
+        });
+      }
+
+      const { data, error } = await supabase
+        .from("devices")
+        .select(
+          "id, computer_name, support_code, status"
+        )
+        .eq(
+          "support_code",
+          String(code)
+        )
+        .single();
+
+      if (error || !data) {
+        return res.status(404).json({
+          error: "Support code not found",
+        });
+      }
+
       return res.json({
         valid: true,
-        device: {
-          supportCode: String(code),
-          status: "offline",
-        },
+        device: formatDevice(data),
+      });
+    } catch (err) {
+      console.error(
+        "[/api/support/verify]",
+        err
+      );
+
+      return res.status(500).json({
+        error: "Internal server error",
       });
     }
-
-    const { data, error } = await supabase
-      .from("devices")
-      .select("id, computer_name, support_code, status")
-      .eq("support_code", String(code))
-      .single();
-
-    if (error || !data) {
-      return res.status(404).json({
-        error: "Support code not found",
-      });
-    }
-
-    return res.json({
-      valid: true,
-      device: formatDevice(data),
-    });
-  } catch (err) {
-    console.error("[/api/support/verify]", err);
-
-    return res.status(500).json({
-      error: "Internal server error",
-    });
   }
-});
+);
 
 // ── Get Devices ───────────────────────────────────────────────────────────────
 
-app.get("/api/devices", requireAuth, async (req, res) => {
-  try {
-    if (!supabase) {
+app.get(
+  "/api/devices",
+  requireAuth,
+  async (req, res) => {
+    try {
+      if (!supabase) {
+        return res.json({
+          devices: [],
+        });
+      }
+
+      const { data, error } = await supabase
+        .from("devices")
+        .select("*")
+        .order("created_at", {
+          ascending: false,
+        });
+
+      if (error) {
+        throw error;
+      }
+
       return res.json({
-        devices: [],
+        devices: (data || []).map(
+          formatDevice
+        ),
+      });
+    } catch (err) {
+      console.error(
+        "[GET /api/devices]",
+        err.message || err
+      );
+
+      return res.status(500).json({
+        error: "Could not load devices",
+        details:
+          err.message ||
+          "Database request failed",
       });
     }
-
-    const { data, error } = await supabase
-      .from("devices")
-      .select("*")
-      .order("created_at", {
-        ascending: false,
-      });
-
-    if (error) {
-      throw error;
-    }
-
-    return res.json({
-      devices: (data || []).map(formatDevice),
-    });
-  } catch (err) {
-    console.error(
-      "[GET /api/devices]",
-      err.message || err
-    );
-
-    return res.status(500).json({
-      error: "Could not load devices",
-      details:
-        err.message || "Database request failed",
-    });
   }
-});
+);
 
 // ── Create Device ─────────────────────────────────────────────────────────────
 
-app.post("/api/devices", requireAuth, async (req, res) => {
-  try {
-    let code = "";
-    let attempts = 0;
+app.post(
+  "/api/devices",
+  requireAuth,
+  async (req, res) => {
+    try {
+      let code = "";
+      let attempts = 0;
 
-    while (attempts < 50) {
-      code = String(
-        Math.floor(Math.random() * 1000000)
-      ).padStart(6, "0");
+      while (attempts < 50) {
+        code = String(
+          Math.floor(
+            Math.random() * 1000000
+          )
+        ).padStart(6, "0");
+
+        if (!supabase) {
+          break;
+        }
+
+        const { data } = await supabase
+          .from("devices")
+          .select("id")
+          .eq(
+            "support_code",
+            code
+          )
+          .single();
+
+        if (!data) {
+          break;
+        }
+
+        attempts++;
+      }
 
       if (!supabase) {
-        break;
+        return res.status(201).json({
+          device: {
+            id: uuidv4(),
+            supportCode: code,
+            status: "offline",
+            computerName: "Pending",
+          },
+        });
       }
 
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("devices")
-        .select("id")
-        .eq("support_code", code)
+        .insert({
+          support_code: code,
+          computer_name: "New Device",
+          status: "offline",
+        })
+        .select()
         .single();
 
-      if (!data) {
-        break;
+      if (error) {
+        throw error;
       }
 
-      attempts++;
-    }
-
-    if (!supabase) {
       return res.status(201).json({
-        device: {
-          id: uuidv4(),
-          supportCode: code,
-          status: "offline",
-          computerName: "Pending",
-        },
+        device: formatDevice(data),
+      });
+    } catch (err) {
+      console.error(
+        "[POST /api/devices]",
+        err.message || err
+      );
+
+      return res.status(500).json({
+        error:
+          "Could not create support token",
+        details:
+          err.message ||
+          "Database request failed",
       });
     }
-
-    const { data, error } = await supabase
-      .from("devices")
-      .insert({
-        support_code: code,
-        computer_name: "New Device",
-        status: "offline",
-      })
-      .select()
-      .single();
-
-    if (error) {
-      throw error;
-    }
-
-    return res.status(201).json({
-      device: formatDevice(data),
-    });
-  } catch (err) {
-    console.error(
-      "[POST /api/devices]",
-      err.message || err
-    );
-
-    return res.status(500).json({
-      error: "Could not create support token",
-      details:
-        err.message || "Database request failed",
-    });
   }
-});
+);
 
 // ── Delete Device ─────────────────────────────────────────────────────────────
 
@@ -527,7 +622,10 @@ app.delete(
         const { error } = await supabase
           .from("devices")
           .delete()
-          .eq("id", req.params.id);
+          .eq(
+            "id",
+            req.params.id
+          );
 
         if (error) {
           throw error;
@@ -538,7 +636,10 @@ app.delete(
         success: true,
       });
     } catch (err) {
-      console.error("[DELETE /api/devices/:id]", err);
+      console.error(
+        "[DELETE /api/devices/:id]",
+        err
+      );
 
       return res.status(500).json({
         error: "Internal server error",
@@ -568,7 +669,8 @@ app.patch(
 
       if (computerName.length > 100) {
         return res.status(400).json({
-          error: "Device name is too long",
+          error:
+            "Device name is too long",
         });
       }
 
@@ -586,7 +688,10 @@ app.patch(
         .update({
           computer_name: computerName,
         })
-        .eq("id", req.params.id)
+        .eq(
+          "id",
+          req.params.id
+        )
         .select()
         .single();
 
@@ -598,7 +703,10 @@ app.patch(
         device: formatDevice(data),
       });
     } catch (err) {
-      console.error("[PATCH /api/devices/:id]", err);
+      console.error(
+        "[PATCH /api/devices/:id]",
+        err
+      );
 
       return res.status(500).json({
         error: "Internal server error",
@@ -609,37 +717,44 @@ app.patch(
 
 // ── Get Sessions ──────────────────────────────────────────────────────────────
 
-app.get("/api/sessions", requireAuth, async (req, res) => {
-  try {
-    if (!supabase) {
+app.get(
+  "/api/sessions",
+  requireAuth,
+  async (req, res) => {
+    try {
+      if (!supabase) {
+        return res.json({
+          sessions: [],
+        });
+      }
+
+      const { data, error } = await supabase
+        .from("sessions")
+        .select("*")
+        .order("started_at", {
+          ascending: false,
+        })
+        .limit(50);
+
+      if (error) {
+        throw error;
+      }
+
       return res.json({
-        sessions: [],
+        sessions: data || [],
+      });
+    } catch (err) {
+      console.error(
+        "[GET /api/sessions]",
+        err
+      );
+
+      return res.status(500).json({
+        error: "Internal server error",
       });
     }
-
-    const { data, error } = await supabase
-      .from("sessions")
-      .select("*")
-      .order("started_at", {
-        ascending: false,
-      })
-      .limit(50);
-
-    if (error) {
-      throw error;
-    }
-
-    return res.json({
-      sessions: data || [],
-    });
-  } catch (err) {
-    console.error("[GET /api/sessions]", err);
-
-    return res.status(500).json({
-      error: "Internal server error",
-    });
   }
-});
+);
 
 // ── Create Session ────────────────────────────────────────────────────────────
 
@@ -649,7 +764,8 @@ app.post(
   async (req, res) => {
     try {
       const deviceId =
-        req.body.deviceId || req.body.device_id;
+        req.body.deviceId ||
+        req.body.device_id;
 
       if (!deviceId) {
         return res.status(400).json({
@@ -662,7 +778,8 @@ app.post(
           session: {
             id: uuidv4(),
             deviceId,
-            startedAt: new Date().toISOString(),
+            startedAt:
+              new Date().toISOString(),
             notes: "",
           },
         });
@@ -685,15 +802,22 @@ app.post(
         .from("devices")
         .update({
           status: "connected",
-          last_seen: new Date().toISOString(),
+          last_seen:
+            new Date().toISOString(),
         })
-        .eq("id", deviceId);
+        .eq(
+          "id",
+          deviceId
+        );
 
       return res.status(201).json({
         session: data,
       });
     } catch (err) {
-      console.error("[POST /api/sessions]", err);
+      console.error(
+        "[POST /api/sessions]",
+        err
+      );
 
       return res.status(500).json({
         error: "Internal server error",
@@ -716,7 +840,8 @@ app.patch(
       }
 
       if (req.body.ended) {
-        updates.ended_at = new Date().toISOString();
+        updates.ended_at =
+          new Date().toISOString();
       }
 
       if (!supabase) {
@@ -731,7 +856,10 @@ app.patch(
       const { data, error } = await supabase
         .from("sessions")
         .update(updates)
-        .eq("id", req.params.id)
+        .eq(
+          "id",
+          req.params.id
+        )
         .select()
         .single();
 
@@ -739,20 +867,29 @@ app.patch(
         throw error;
       }
 
-      if (req.body.ended && data.device_id) {
+      if (
+        req.body.ended &&
+        data.device_id
+      ) {
         await supabase
           .from("devices")
           .update({
             status: "offline",
           })
-          .eq("id", data.device_id);
+          .eq(
+            "id",
+            data.device_id
+          );
       }
 
       return res.json({
         session: data,
       });
     } catch (err) {
-      console.error("[PATCH /api/sessions/:id]", err);
+      console.error(
+        "[PATCH /api/sessions/:id]",
+        err
+      );
 
       return res.status(500).json({
         error: "Internal server error",
@@ -765,316 +902,378 @@ app.patch(
 // DOWNLOAD ROUTES
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── GET /api/download ─────────────────────────────────────────────────────────
+// Step 1: Verify code and return installer URL
 
-app.get("/api/download", async (req, res) => {
-  try {
-    const code = String(req.query.code || "");
-
-    if (!/^\d{6}$/.test(code)) {
-      return res.status(400).json({
-        error: "Invalid support code",
-      });
-    }
-
-    const valid = await validateSupportCode(code);
-
-    if (!valid) {
-      return res.status(404).json({
-        error: "Support code not found",
-      });
-    }
-
-    return res.json({
-      valid: true,
-      code,
-      fileName: "Connect Support Setup.exe",
-      downloadUrl: `/api/download/installer?code=${encodeURIComponent(
-        code
-      )}`,
-      instructions: [
-        "Download the Connect Support Setup file.",
-        "Run the installer.",
-        "The remaining application files will download automatically.",
-        "The Connect Support Agent will start after installation.",
-      ],
-    });
-  } catch (err) {
-    console.error("[GET /api/download]", err);
-
-    return res.status(500).json({
-      error: "Could not prepare download",
-    });
-  }
-});
-
-// ── GET /api/download/installer ───────────────────────────────────────────────
-// Securely streams the installer from private Azure Blob Storage.
-// The Azure blob container can remain PRIVATE.
-
-app.get("/api/download/installer", async (req, res) => {
-  try {
-    const code = String(req.query.code || "");
-
-    if (!/^\d{6}$/.test(code)) {
-      return res.status(400).json({
-        error: "Invalid support code",
-      });
-    }
-
-    const valid = await validateSupportCode(code);
-
-    if (!valid) {
-      return res.status(404).json({
-        error: "Support code not found",
-      });
-    }
-
-    if (!blobServiceClient) {
-      return res.status(503).json({
-        error:
-          "Installer storage is not configured. Set Azure Storage environment variables.",
-      });
-    }
-
-    const containerClient =
-      blobServiceClient.getContainerClient(
-        AZURE_STORAGE_CONTAINER
+app.get(
+  "/api/download",
+  async (req, res) => {
+    try {
+      const code = String(
+        req.query.code || ""
       );
 
-    const blockBlobClient =
-      containerClient.getBlockBlobClient(
-        INSTALLER_BLOB_NAME
-      );
+      if (!/^\d{6}$/.test(code)) {
+        return res.status(400).json({
+          error: "Invalid support code",
+        });
+      }
 
-    const exists = await blockBlobClient.exists();
+      const valid =
+        await validateSupportCode(code);
 
-    if (!exists) {
+      if (!valid) {
+        return res.status(404).json({
+          error: "Support code not found",
+        });
+      }
+
+      return res.json({
+        valid: true,
+        code,
+        fileName:
+          "Connect Support Setup.exe",
+        downloadUrl:
+          `/api/download/installer?code=${encodeURIComponent(
+            code
+          )}`,
+        instructions: [
+          "Download the Connect Support Setup file.",
+          "Run the installer.",
+          "The remaining application files will download automatically.",
+          "The Connect Support Agent will start after installation.",
+        ],
+      });
+    } catch (err) {
       console.error(
-        "[Installer] Blob not found:",
-        AZURE_STORAGE_CONTAINER,
-        INSTALLER_BLOB_NAME
+        "[GET /api/download]",
+        err
       );
 
-      return res.status(404).json({
-        error: "Installer file not found",
-      });
-    }
-
-    const downloadResponse =
-      await blockBlobClient.download(0);
-
-    res.setHeader(
-      "Content-Type",
-      "application/octet-stream"
-    );
-
-    res.setHeader(
-      "Content-Disposition",
-      'attachment; filename="Connect Support Setup.exe"'
-    );
-
-    res.setHeader(
-      "Cache-Control",
-      "no-store"
-    );
-
-    if (!downloadResponse.readableStreamBody) {
       return res.status(500).json({
-        error: "Could not read installer file",
+        error: "Could not prepare download",
       });
     }
+  }
+);
 
-    downloadResponse.readableStreamBody.on(
-      "error",
-      (err) => {
-        console.error(
-          "[Installer Stream Error]",
-          err
+// Step 2: Securely stream installer from PRIVATE Azure Blob Storage
+
+app.get(
+  "/api/download/installer",
+  async (req, res) => {
+    try {
+      const code = String(
+        req.query.code || ""
+      );
+
+      if (!/^\d{6}$/.test(code)) {
+        return res.status(400).json({
+          error: "Invalid support code",
+        });
+      }
+
+      const valid =
+        await validateSupportCode(code);
+
+      if (!valid) {
+        return res.status(404).json({
+          error: "Support code not found",
+        });
+      }
+
+      if (!blobServiceClient) {
+        return res.status(503).json({
+          error:
+            "Installer storage is not configured.",
+        });
+      }
+
+      const containerClient =
+        blobServiceClient.getContainerClient(
+          AZURE_STORAGE_CONTAINER
         );
 
-        if (!res.headersSent) {
-          res.status(500).end();
-        } else {
-          res.end();
-        }
+      const blockBlobClient =
+        containerClient.getBlockBlobClient(
+          INSTALLER_BLOB_NAME
+        );
+
+      const exists =
+        await blockBlobClient.exists();
+
+      if (!exists) {
+        console.error(
+          "[Installer] Blob not found:",
+          AZURE_STORAGE_CONTAINER,
+          INSTALLER_BLOB_NAME
+        );
+
+        return res.status(404).json({
+          error: "Installer file not found",
+        });
       }
-    );
 
-    downloadResponse.readableStreamBody.pipe(res);
-  } catch (err) {
-    console.error(
-      "[GET /api/download/installer]",
-      err
-    );
+      const downloadResponse =
+        await blockBlobClient.download(0);
 
-    if (!res.headersSent) {
-      return res.status(500).json({
-        error: "Could not download installer",
-        details: err.message,
-      });
+      res.setHeader(
+        "Content-Type",
+        "application/octet-stream"
+      );
+
+      res.setHeader(
+        "Content-Disposition",
+        'attachment; filename="Connect Support Setup.exe"'
+      );
+
+      res.setHeader(
+        "Cache-Control",
+        "no-store"
+      );
+
+      if (
+        !downloadResponse.readableStreamBody
+      ) {
+        return res.status(500).json({
+          error:
+            "Could not read installer file",
+        });
+      }
+
+      downloadResponse.readableStreamBody.on(
+        "error",
+        (err) => {
+          console.error(
+            "[Installer Stream Error]",
+            err
+          );
+
+          if (!res.headersSent) {
+            res.status(500).end();
+          } else {
+            res.end();
+          }
+        }
+      );
+
+      downloadResponse.readableStreamBody.pipe(
+        res
+      );
+    } catch (err) {
+      console.error(
+        "[GET /api/download/installer]",
+        err
+      );
+
+      if (!res.headersSent) {
+        return res.status(500).json({
+          error:
+            "Could not download installer",
+          details: err.message,
+        });
+      }
+
+      res.end();
     }
-
-    res.end();
   }
-});
+);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SOCKET.IO SIGNALING
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Maps: socketId → metadata
+// socketId → metadata
 const socketMeta = new Map();
 
 // supportCode → unattended state
 const deviceAccessState = new Map();
 
 io.on("connection", (socket) => {
-  console.log("[Socket] connected:", socket.id);
+  console.log(
+    "[Socket] connected:",
+    socket.id
+  );
 
   // ── Client Register ────────────────────────────────────────────────────────
 
-  socket.on("register-client", (data = {}) => {
-    try {
-      const {
-        supportCode,
-        computerName,
-        osInfo,
-        unattendedAccess,
-      } = data;
+  socket.on(
+    "register-client",
+    (data = {}) => {
+      try {
+        const {
+          supportCode,
+          computerName,
+          osInfo,
+          unattendedAccess,
+        } = data;
 
-      if (!supportCode) {
-        return;
-      }
+        if (!supportCode) {
+          return;
+        }
 
-      const room = `device-${supportCode}`;
+        const room =
+          `device-${supportCode}`;
 
-      socket.join(room);
+        socket.join(room);
 
-      socketMeta.set(socket.id, {
-        role: "client",
-        deviceCode: supportCode,
-        unattendedAccess: !!unattendedAccess,
-      });
-
-      deviceAccessState.set(supportCode, {
-        unattendedAccess: !!unattendedAccess,
-      });
-
-      if (supabase) {
-        supabase
-          .from("devices")
-          .update({
-            status: "waiting",
-            computer_name: computerName || "Unknown Device",
-            os_info: osInfo || "",
-            last_seen: new Date().toISOString(),
-          })
-          .eq("support_code", supportCode)
-          .then(({ error }) => {
-            if (error) {
-              console.error(
-                "[register-client database]",
-                error
-              );
-            }
-          });
-      }
-
-      io.emit("client-status-update", {
-        supportCode,
-        computerName: computerName || "Unknown Device",
-        osInfo: osInfo || "",
-        status: "waiting",
-        unattendedAccess: !!unattendedAccess,
-        socketId: socket.id,
-      });
-
-      console.log(
-        "[Socket] client registered:",
-        supportCode,
-        computerName,
-        "unattended:",
-        !!unattendedAccess
-      );
-    } catch (err) {
-      console.error("[register-client]", err);
-    }
-  });
-
-  // ── Technician Connect Request ─────────────────────────────────────────────
-
-  socket.on("tech-connect-request", (data = {}) => {
-    try {
-      const {
-        supportCode,
-        sessionId,
-      } = data;
-
-      if (!supportCode) {
-        return;
-      }
-
-      const room = `device-${supportCode}`;
-
-      const unattendedAccess =
-        deviceAccessState.get(supportCode)
-          ?.unattendedAccess === true;
-
-      socketMeta.set(socket.id, {
-        role: "tech",
-        deviceCode: supportCode,
-        sessionId,
-      });
-
-      socket.join(room);
-
-      if (unattendedAccess) {
-        io.to(room).emit(
-          "connection-approved",
+        socketMeta.set(
+          socket.id,
           {
-            supportCode,
-            sessionId,
+            role: "client",
+            deviceCode: supportCode,
+            unattendedAccess:
+              !!unattendedAccess,
           }
         );
+
+        deviceAccessState.set(
+          supportCode,
+          {
+            unattendedAccess:
+              !!unattendedAccess,
+          }
+        );
+
+        if (supabase) {
+          supabase
+            .from("devices")
+            .update({
+              status: "waiting",
+              computer_name:
+                computerName ||
+                "Unknown Device",
+              os_info:
+                osInfo || "",
+              last_seen:
+                new Date().toISOString(),
+            })
+            .eq(
+              "support_code",
+              supportCode
+            )
+            .then(({ error }) => {
+              if (error) {
+                console.error(
+                  "[register-client database]",
+                  error
+                );
+              }
+            });
+        }
 
         io.emit(
           "client-status-update",
           {
             supportCode,
-            status: "connected",
-            sessionId,
-            unattendedAccess: true,
+            computerName:
+              computerName ||
+              "Unknown Device",
+            osInfo: osInfo || "",
+            status: "waiting",
+            unattendedAccess:
+              !!unattendedAccess,
+            socketId: socket.id,
           }
         );
 
         console.log(
-          "[Socket] unattended connect approved:",
-          supportCode
+          "[Socket] client registered:",
+          supportCode,
+          computerName,
+          "unattended:",
+          !!unattendedAccess
+        );
+      } catch (err) {
+        console.error(
+          "[register-client]",
+          err
+        );
+      }
+    }
+  );
+
+  // ── Technician Connect Request ─────────────────────────────────────────────
+
+  socket.on(
+    "tech-connect-request",
+    (data = {}) => {
+      try {
+        const {
+          supportCode,
+          sessionId,
+        } = data;
+
+        if (!supportCode) {
+          return;
+        }
+
+        const room =
+          `device-${supportCode}`;
+
+        const unattendedAccess =
+          deviceAccessState.get(
+            supportCode
+          )?.unattendedAccess === true;
+
+        socketMeta.set(
+          socket.id,
+          {
+            role: "tech",
+            deviceCode: supportCode,
+            sessionId,
+          }
         );
 
-        return;
-      }
+        socket.join(room);
 
-      io.to(room).emit(
-        "approval-request",
-        {
-          sessionId,
-          techSocketId: socket.id,
+        if (unattendedAccess) {
+          io.to(room).emit(
+            "connection-approved",
+            {
+              supportCode,
+              sessionId,
+            }
+          );
+
+          io.emit(
+            "client-status-update",
+            {
+              supportCode,
+              status: "connected",
+              sessionId,
+              unattendedAccess: true,
+            }
+          );
+
+          console.log(
+            "[Socket] unattended connect approved:",
+            supportCode
+          );
+
+          return;
         }
-      );
 
-      console.log(
-        "[Socket] tech connect request:",
-        supportCode
-      );
-    } catch (err) {
-      console.error(
-        "[tech-connect-request]",
-        err
-      );
+        io.to(room).emit(
+          "approval-request",
+          {
+            sessionId,
+            techSocketId:
+              socket.id,
+          }
+        );
+
+        console.log(
+          "[Socket] tech connect request:",
+          supportCode
+        );
+      } catch (err) {
+        console.error(
+          "[tech-connect-request]",
+          err
+        );
+      }
     }
-  });
+  );
 
   // ── Client Approve ─────────────────────────────────────────────────────────
 
@@ -1091,7 +1290,8 @@ io.on("connection", (socket) => {
           return;
         }
 
-        const room = `device-${supportCode}`;
+        const room =
+          `device-${supportCode}`;
 
         io.to(room).emit(
           "connection-approved",
@@ -1149,141 +1349,185 @@ io.on("connection", (socket) => {
 
   // ── Stream Frame ───────────────────────────────────────────────────────────
 
-  socket.on("stream-frame", (data = {}) => {
-    try {
-      const meta = socketMeta.get(socket.id);
-      const supportCode = data.supportCode;
+  socket.on(
+    "stream-frame",
+    (data = {}) => {
+      try {
+        const meta =
+          socketMeta.get(socket.id);
 
-      if (
-        meta?.role !== "client" ||
-        !supportCode ||
-        meta.deviceCode !== supportCode ||
-        typeof data.frame !== "string" ||
-        !data.frame
-      ) {
-        console.warn(
-          "[Backend] Invalid stream frame"
-        );
-        return;
-      }
+        const supportCode =
+          data.supportCode;
 
-      const room = `device-${supportCode}`;
+        if (
+          meta?.role !== "client" ||
+          !supportCode ||
+          meta.deviceCode !== supportCode ||
+          typeof data.frame !== "string" ||
+          !data.frame
+        ) {
+          return;
+        }
 
-      const roomSockets =
-        io.sockets.adapter.rooms.get(room) ||
-        new Set();
+        const room =
+          `device-${supportCode}`;
 
-      const technicianSockets =
-        [...roomSockets].filter((socketId) => {
-          const targetMeta =
-            socketMeta.get(socketId);
+        const roomSockets =
+          io.sockets.adapter.rooms.get(
+            room
+          ) || new Set();
 
-          return (
-            targetMeta?.role === "tech" &&
-            (
-              !data.sessionId ||
-              targetMeta.sessionId === data.sessionId
-            )
+        const technicianSockets =
+          [...roomSockets].filter(
+            (socketId) => {
+              const targetMeta =
+                socketMeta.get(socketId);
+
+              return (
+                targetMeta?.role ===
+                  "tech" &&
+                (
+                  !data.sessionId ||
+                  targetMeta.sessionId ===
+                    data.sessionId
+                )
+              );
+            }
           );
-        });
 
-      if (!technicianSockets.length) {
-        return;
+        if (!technicianSockets.length) {
+          return;
+        }
+
+        io.to(
+          technicianSockets
+        ).emit(
+          "stream-frame",
+          data
+        );
+      } catch (err) {
+        console.error(
+          "[stream-frame]",
+          err
+        );
       }
-
-      io.to(technicianSockets).emit(
-        "stream-frame",
-        data
-      );
-    } catch (err) {
-      console.error("[stream-frame]", err);
     }
-  });
+  );
 
   // ── Mouse ──────────────────────────────────────────────────────────────────
 
-  socket.on("mouse-event", (data = {}) => {
-    try {
-      if (!data.supportCode) return;
+  socket.on(
+    "mouse-event",
+    (data = {}) => {
+      try {
+        if (!data.supportCode) return;
 
-      socket.to(
-        `device-${data.supportCode}`
-      ).emit(
-        "mouse-event",
-        data
-      );
-    } catch (err) {
-      console.error("[mouse-event]", err);
+        socket.to(
+          `device-${data.supportCode}`
+        ).emit(
+          "mouse-event",
+          data
+        );
+      } catch (err) {
+        console.error(
+          "[mouse-event]",
+          err
+        );
+      }
     }
-  });
+  );
 
   // ── Keyboard ───────────────────────────────────────────────────────────────
 
-  socket.on("keyboard-event", (data = {}) => {
-    try {
-      if (!data.supportCode) return;
+  socket.on(
+    "keyboard-event",
+    (data = {}) => {
+      try {
+        if (!data.supportCode) return;
 
-      socket.to(
-        `device-${data.supportCode}`
-      ).emit(
-        "keyboard-event",
-        data
-      );
-    } catch (err) {
-      console.error("[keyboard-event]", err);
+        socket.to(
+          `device-${data.supportCode}`
+        ).emit(
+          "keyboard-event",
+          data
+        );
+      } catch (err) {
+        console.error(
+          "[keyboard-event]",
+          err
+        );
+      }
     }
-  });
+  );
 
   // ── Chat ───────────────────────────────────────────────────────────────────
 
-  socket.on("chat-message", (data = {}) => {
-    try {
-      if (!data.supportCode) return;
+  socket.on(
+    "chat-message",
+    (data = {}) => {
+      try {
+        if (!data.supportCode) return;
 
-      socket.to(
-        `device-${data.supportCode}`
-      ).emit(
-        "chat-message",
-        data
-      );
-    } catch (err) {
-      console.error("[chat-message]", err);
+        socket.to(
+          `device-${data.supportCode}`
+        ).emit(
+          "chat-message",
+          data
+        );
+      } catch (err) {
+        console.error(
+          "[chat-message]",
+          err
+        );
+      }
     }
-  });
+  );
 
   // ── File Transfer ──────────────────────────────────────────────────────────
 
-  socket.on("file-chunk", (data = {}) => {
-    try {
-      if (!data.supportCode) return;
+  socket.on(
+    "file-chunk",
+    (data = {}) => {
+      try {
+        if (!data.supportCode) return;
 
-      socket.to(
-        `device-${data.supportCode}`
-      ).emit(
-        "file-chunk",
-        data
-      );
-    } catch (err) {
-      console.error("[file-chunk]", err);
+        socket.to(
+          `device-${data.supportCode}`
+        ).emit(
+          "file-chunk",
+          data
+        );
+      } catch (err) {
+        console.error(
+          "[file-chunk]",
+          err
+        );
+      }
     }
-  });
+  );
 
   // ── Clipboard ──────────────────────────────────────────────────────────────
 
-  socket.on("clipboard-sync", (data = {}) => {
-    try {
-      if (!data.supportCode) return;
+  socket.on(
+    "clipboard-sync",
+    (data = {}) => {
+      try {
+        if (!data.supportCode) return;
 
-      socket.to(
-        `device-${data.supportCode}`
-      ).emit(
-        "clipboard-sync",
-        data
-      );
-    } catch (err) {
-      console.error("[clipboard-sync]", err);
+        socket.to(
+          `device-${data.supportCode}`
+        ).emit(
+          "clipboard-sync",
+          data
+        );
+      } catch (err) {
+        console.error(
+          "[clipboard-sync]",
+          err
+        );
+      }
     }
-  });
+  );
 
   // ── Blank Screen ───────────────────────────────────────────────────────────
 
@@ -1309,7 +1553,8 @@ io.on("connection", (socket) => {
             "change-privacy-media",
             {
               mediaType: "css",
-              mediaKey: "default-blue",
+              mediaKey:
+                "default-blue",
             }
           );
         }
@@ -1322,7 +1567,7 @@ io.on("connection", (socket) => {
     }
   );
 
-  // ── Privacy Media ──────────────────────────────────────────────────────────
+  // ── Privacy Media Change ───────────────────────────────────────────────────
 
   socket.on(
     "change-privacy-media",
@@ -1335,9 +1580,12 @@ io.on("connection", (socket) => {
         ).emit(
           "change-privacy-media",
           {
-            mediaType: data.mediaType,
-            mediaKey: data.mediaKey,
-            mediaUrl: data.mediaUrl,
+            mediaType:
+              data.mediaType,
+            mediaKey:
+              data.mediaKey,
+            mediaUrl:
+              data.mediaUrl,
           }
         );
       } catch (err) {
@@ -1387,7 +1635,8 @@ io.on("connection", (socket) => {
         ).emit(
           "switch-monitor",
           {
-            monitorIndex: data.monitorIndex,
+            monitorIndex:
+              data.monitorIndex,
           }
         );
       } catch (err) {
@@ -1424,86 +1673,47 @@ io.on("connection", (socket) => {
 
   // ── End Session ────────────────────────────────────────────────────────────
 
-  socket.on("end-session", (data = {}) => {
-    try {
-      const supportCode = data.supportCode;
+  socket.on(
+    "end-session",
+    (data = {}) => {
+      try {
+        const supportCode =
+          data.supportCode;
 
-      if (!supportCode) {
-        return;
-      }
-
-      const meta = socketMeta.get(socket.id);
-
-      if (
-        meta?.role !== "tech" ||
-        meta.deviceCode !== supportCode
-      ) {
-        return;
-      }
-
-      io.to(
-        `device-${supportCode}`
-      ).emit(
-        "tech-disconnected",
-        {
-          supportCode,
-          intentional: true,
+        if (!supportCode) {
+          return;
         }
-      );
 
-      io.emit(
-        "client-status-update",
-        {
-          supportCode,
-          status: "waiting",
-          unattendedAccess:
-            deviceAccessState.get(supportCode)
-              ?.unattendedAccess === true,
+        const meta =
+          socketMeta.get(socket.id);
+
+        if (
+          meta?.role !== "tech" ||
+          meta.deviceCode !==
+            supportCode
+        ) {
+          return;
         }
-      );
 
-      if (supabase) {
-        supabase
-          .from("devices")
-          .update({
-            status: "waiting",
-            last_seen: new Date().toISOString(),
-          })
-          .eq("support_code", supportCode)
-          .then(({ error }) => {
-            if (error) {
-              console.error(
-                "[end-session database]",
-                error
-              );
-            }
-          });
-      }
+        io.to(
+          `device-${supportCode}`
+        ).emit(
+          "tech-disconnected",
+          {
+            supportCode,
+            intentional: true,
+          }
+        );
 
-      console.log(
-        "[Socket] tech ended session:",
-        supportCode
-      );
-    } catch (err) {
-      console.error("[end-session]", err);
-    }
-  });
-
-  // ── Disconnect ─────────────────────────────────────────────────────────────
-
-  socket.on("disconnect", () => {
-    try {
-      const meta = socketMeta.get(socket.id);
-
-      if (
-        meta?.role === "client" &&
-        meta.deviceCode
-      ) {
         io.emit(
           "client-status-update",
           {
-            supportCode: meta.deviceCode,
-            status: "offline",
+            supportCode,
+            status: "waiting",
+            unattendedAccess:
+              deviceAccessState.get(
+                supportCode
+              )?.unattendedAccess === true,
           }
         );
 
@@ -1511,33 +1721,96 @@ io.on("connection", (socket) => {
           supabase
             .from("devices")
             .update({
-              status: "offline",
+              status: "waiting",
+              last_seen:
+                new Date().toISOString(),
             })
             .eq(
               "support_code",
-              meta.deviceCode
+              supportCode
             )
             .then(({ error }) => {
               if (error) {
                 console.error(
-                  "[disconnect database]",
+                  "[end-session database]",
                   error
                 );
               }
             });
         }
+
+        console.log(
+          "[Socket] tech ended session:",
+          supportCode
+        );
+      } catch (err) {
+        console.error(
+          "[end-session]",
+          err
+        );
       }
-
-      socketMeta.delete(socket.id);
-
-      console.log(
-        "[Socket] disconnected:",
-        socket.id
-      );
-    } catch (err) {
-      console.error("[disconnect]", err);
     }
-  });
+  );
+
+  // ── Disconnect ─────────────────────────────────────────────────────────────
+
+  socket.on(
+    "disconnect",
+    () => {
+      try {
+        const meta =
+          socketMeta.get(socket.id);
+
+        if (
+          meta?.role === "client" &&
+          meta.deviceCode
+        ) {
+          io.emit(
+            "client-status-update",
+            {
+              supportCode:
+                meta.deviceCode,
+              status: "offline",
+            }
+          );
+
+          if (supabase) {
+            supabase
+              .from("devices")
+              .update({
+                status: "offline",
+              })
+              .eq(
+                "support_code",
+                meta.deviceCode
+              )
+              .then(({ error }) => {
+                if (error) {
+                  console.error(
+                    "[disconnect database]",
+                    error
+                  );
+                }
+              });
+          }
+        }
+
+        socketMeta.delete(
+          socket.id
+        );
+
+        console.log(
+          "[Socket] disconnected:",
+          socket.id
+        );
+      } catch (err) {
+        console.error(
+          "[disconnect]",
+          err
+        );
+      }
+    }
+  );
 });
 
 // ── Start Server ──────────────────────────────────────────────────────────────
