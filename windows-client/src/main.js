@@ -356,11 +356,11 @@ const button = document.getElementById("connect");
 const error = document.getElementById("error");
 
 code.addEventListener("input", () => {
-  code.value = code.value.replace(/\\D/g, "").slice(0, 6);
+  code.value = code.value.replace(/\D/g, "").slice(0, 6);
 });
 
 button.addEventListener("click", async () => {
-  if (!/^\\d{6}$/.test(code.value)) {
+  if (!/^\d{6}$/.test(code.value.trim())) {
     error.textContent = "Enter exactly 6 digits.";
     return;
   }
@@ -395,7 +395,7 @@ code.addEventListener("keydown", (event) => {
 
 // ── IPC ───────────────────────────────────────────────────────────────────────
 ipcMain.handle("configure-agent", async (_event, supportCode) => {
-  if (!/^\\d{6}$/.test(supportCode)) {
+  if (!/^\d{6}$/.test(String(supportCode).trim())) {
     return {
       ok: false,
       error: "Enter exactly 6 digits.",
@@ -404,7 +404,7 @@ ipcMain.handle("configure-agent", async (_event, supportCode) => {
 
   CONFIG = {
     ...CONFIG,
-    supportCode,
+    supportCode: String(supportCode).trim(),
   };
 
   persistConfig();
