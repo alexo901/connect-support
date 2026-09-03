@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Connect Support Windows Agent",
   "main": "src/main.js",
+  "author": "Connect Support",
   "scripts": {
     "start": "electron . --server=https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net",
     "dev": "electron . --dev --server=https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net",
@@ -48,7 +49,13 @@
       "perMachine": false,
       "createDesktopShortcut": false,
       "createStartMenuShortcut": false
-    }
+    },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net/downloads/"
+      }
+    ]
   },
   "allowScripts": {
     "electron@29.4.6": true,
