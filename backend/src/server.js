@@ -48,7 +48,7 @@ const AZURE_STORAGE_CONTAINER =
   process.env.AZURE_STORAGE_CONTAINER || "installers";
 
 const INSTALLER_BLOB_NAME =
-  process.env.INSTALLER_BLOB_NAME || "Connect Support Web Setup 1.0.1.exe";
+  process.env.INSTALLER_BLOB_NAME || "Connect Support Web Setup 1.0.0.exe";
 
 // ── Supabase ──────────────────────────────────────────────────────────────────
 
@@ -1124,7 +1124,7 @@ app.get(
         {
           attachment: true,
           downloadName:
-            "Support.exe",
+            "Connect Support Web Setup 1.0.0.exe",
           noStore: true,
         }
       );
