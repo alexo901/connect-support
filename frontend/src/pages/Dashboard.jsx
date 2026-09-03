@@ -278,7 +278,14 @@ export default function Dashboard() {
     if (!selectedDevice) return;
     const next = val !== undefined ? val : !blankScreen;
     setBlankScreen(next);
-    socketRef.current?.emit("toggle-blank-screen", { supportCode: selectedDevice.supportCode, enabled: next });
+    const media = [...BUILTIN_PRIVACY_MEDIA, ...savedMedia.map(m => ({ ...m, key: `uploaded-${m.id}`, label: m.name, type: m.mimeType.startsWith("video/") ? "video" : "image", url: `${API}${m.url}` }))].find(m => m.key === selectedMedia);
+    socketRef.current?.emit("toggle-blank-screen", {
+      supportCode: selectedDevice.supportCode,
+      enabled: next,
+      mediaKey: media?.key || "default-blue",
+      mediaType: media?.type,
+      mediaUrl: media?.url,
+    });
     if (!next) {
       setPlayingMedia(null);
       setSelectedMedia("default-blue");

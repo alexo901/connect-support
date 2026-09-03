@@ -124,6 +124,8 @@ let activeMonitor = 0;
 let inputLocked = false;
 let blankScreenOn = false;
 let currentMediaKey = "default-blue";
+let currentMediaType = "css";
+let currentMediaUrl = null;
 let activeSessionId = null;
 
 // ── Single instance ───────────────────────────────────────────────────────────
@@ -722,7 +724,7 @@ function openPrivacyWindows(
       fullscreen: true,
       alwaysOnTop: true,
       skipTaskbar: true,
-      focusable: false,
+      focusable: true,
       resizable: false,
       movable: false,
       backgroundColor: "#000000",
@@ -743,6 +745,8 @@ function openPrivacyWindows(
     );
 
     win.setAlwaysOnTop(true, "screen-saver");
+    win.setKiosk(true);
+    win.setFullScreen(true);
     win.moveTop();
 
     privacyWindows.push(win);
@@ -767,6 +771,8 @@ function updatePrivacyMedia(
   mediaUrl
 ) {
   currentMediaKey = mediaKey;
+  currentMediaType = mediaType || "css";
+  currentMediaUrl = mediaUrl || null;
 
   if (!blankScreenOn) return;
 
@@ -774,7 +780,7 @@ function updatePrivacyMedia(
     if (!win.isDestroyed()) {
       win.loadURL(
         `data:text/html;charset=utf-8,${encodeURIComponent(
-          getPrivacyHTML(mediaKey, mediaType, mediaUrl)
+          getPrivacyHTML(mediaKey || "default-blue", mediaType, mediaUrl)
         )}`
       );
     }
