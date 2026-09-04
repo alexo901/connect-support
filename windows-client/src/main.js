@@ -1233,7 +1233,7 @@ function connectSocket() {
           });
           console.log("[Agent] register-client heartbeat emitted", CONFIG.supportCode);
         }
-      }, 15000);
+      }, 30000); // every 5 minutes
     if (sessionActive && activeSessionId) {
       console.log("[Agent] Reconnected during active session; resuming stream");
       startScreenStream();
