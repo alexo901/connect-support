@@ -30,8 +30,15 @@ const { io } = require("socket.io-client");
 function loadConfig() {
   const args = process.argv.slice(2);
 
-  const argCode = args.find((a) => a.startsWith("--code="))?.slice(7);
-  const argServer = args.find((a) => a.startsWith("--server="))?.slice(9);
+  const readArg = (name) => {
+    const inline = args.find((arg) => arg.startsWith(`${name}=`));
+    if (inline) return inline.slice(name.length + 1).trim();
+    const index = args.indexOf(name);
+    return index >= 0 && args[index + 1] ? args[index + 1].trim() : "";
+  };
+
+  const argCode = readArg("--code");
+  const argServer = readArg("--server");
 
   const configPath = path.join(app.getPath("userData"), "config.json");
   let fileConfig = {};
@@ -61,7 +68,7 @@ function loadConfig() {
     console.error("[Agent] Failed to read install config:", err.message);
   }
 
-  return {
+  const config = {
     serverUrl:
       argServer ||
       fileConfig.serverUrl ||
@@ -86,6 +93,15 @@ function loadConfig() {
       false
     ),
   };
+
+  console.log("[Agent] Config sources:", {
+    argv: process.argv.slice(2),
+    cliCodeLoaded: !!argCode,
+    fileCodeLoaded: !!fileConfig.supportCode,
+    installCodeLoaded: !!installConfig.supportCode,
+    supportCode: config.supportCode,
+  });
+  return config;
 }
 
 let CONFIG = loadConfig();
