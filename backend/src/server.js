@@ -48,7 +48,7 @@ const AZURE_STORAGE_CONTAINER =
   process.env.AZURE_STORAGE_CONTAINER || "installers";
 
 const INSTALLER_BLOB_NAME =
-  process.env.INSTALLER_BLOB_NAME || "Connect Support Web Setup 1.0.1.exe";
+  process.env.INSTALLER_BLOB_NAME || "Connect Support Web Setup 1.0.2.exe";
 
 // ── Supabase ──────────────────────────────────────────────────────────────────
 
@@ -904,8 +904,8 @@ app.patch(
 
 // Exact installer files available in Azure Blob Storage
 const DOWNLOADABLE_INSTALLER_FILES = new Set([
-  "Connect Support Web Setup 1.0.1.exe",
-  "connect-support-agent-1.0.1-x64.nsis.7z",
+  "Connect Support Web Setup 1.0.2.exe",
+  "connect-support-agent-1.0.2-x64.nsis.7z",
   "latest.yml",
 ]);
 
