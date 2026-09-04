@@ -1,6 +1,6 @@
 {
   "name": "connect-support-agent",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Connect Support Windows Agent",
   "main": "src/main.js",
   "author": "Connect Support",

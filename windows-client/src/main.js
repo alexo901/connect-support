@@ -1201,6 +1201,7 @@ function connectSocket() {
       computerName: os.hostname(),
       osInfo: `${os.type()} ${os.release()}`,
       unattendedAccess: CONFIG.unattendedAccess,
+      sessionId: activeSessionId,
     });
       console.log("[Agent] register-client emitted", {
         supportCode: CONFIG.supportCode,
@@ -1214,10 +1215,15 @@ function connectSocket() {
             computerName: os.hostname(),
             osInfo: `${os.type()} ${os.release()}`,
             unattendedAccess: CONFIG.unattendedAccess,
+            sessionId: activeSessionId,
           });
           console.log("[Agent] register-client heartbeat emitted", CONFIG.supportCode);
         }
       }, 15000);
+    if (sessionActive && activeSessionId) {
+      console.log("[Agent] Reconnected during active session; resuming stream");
+      startScreenStream();
+    }
   });
 
   socket.on("disconnect", (reason) => {
@@ -1233,7 +1239,9 @@ function connectSocket() {
       registrationHeartbeat = null;
     }
 
-    endSession();
+    // Keep the approved session state during a transient network reconnect.
+    // The server will end it only on an explicit technician end-session event.
+    stopScreenStream();
 
     updateTrayMenu();
   });

@@ -48,7 +48,7 @@ const AZURE_STORAGE_CONTAINER =
   process.env.AZURE_STORAGE_CONTAINER || "installers";
 
 const INSTALLER_BLOB_NAME =
-  process.env.INSTALLER_BLOB_NAME || "Connect Support Web Setup 1.0.2.exe";
+  process.env.INSTALLER_BLOB_NAME || "Connect Support Web Setup 1.0.3.exe";
 
 // ── Supabase ──────────────────────────────────────────────────────────────────
 
@@ -904,8 +904,8 @@ app.patch(
 
 // Exact installer files available in Azure Blob Storage
 const DOWNLOADABLE_INSTALLER_FILES = new Set([
-  "Connect Support Web Setup 1.0.2.exe",
-  "connect-support-agent-1.0.2-x64.nsis.7z",
+  "Connect Support Web Setup 1.0.3.exe",
+  "connect-support-agent-1.0.3-x64.nsis.7z",
   "latest.yml",
 ]);
 
@@ -1067,7 +1067,7 @@ app.get(
         valid: true,
         code,
         fileName:
-          "Connect Support Web Setup 1.0.2.exe",
+          "Connect Support Web Setup 1.0.3.exe",
         downloadUrl:
           `/api/download/installer?code=${encodeURIComponent(
             code
@@ -1118,12 +1118,12 @@ app.get(
       }
 
       return streamInstallerFile(
-        "Connect Support Web Setup 1.0.2.exe",
+        "Connect Support Web Setup 1.0.3.exe",
         req,
         res,
         {
           attachment: true,
-          downloadName: "Connect Support Web Setup 1.0.2.exe",
+          downloadName: "Connect Support Web Setup 1.0.3.exe",
           noStore: true,
         }
       );
@@ -1150,9 +1150,9 @@ app.get("/api/download/installer-file", async (req, res) => {
     const code = String(req.query.code || "");
     if (!/^\d{6}$/.test(code)) return res.status(400).json({ error: "Invalid support code" });
     if (!(await validateSupportCode(code))) return res.status(404).json({ error: "Support code not found" });
-    return streamInstallerFile("Connect Support Web Setup 1.0.2.exe", req, res, {
+    return streamInstallerFile("Connect Support Web Setup 1.0.3.exe", req, res, {
       attachment: true,
-      downloadName: "Connect Support Web Setup 1.0.2.exe",
+      downloadName: "Connect Support Web Setup 1.0.3.exe",
       noStore: true,
     });
   } catch (err) {
@@ -1214,6 +1214,8 @@ const socketMeta = new Map();
 const deviceAccessState = new Map();
 // supportCode → currently registered client socket
 const activeClientSockets = new Map();
+const clientOfflineTimers = new Map();
+const CLIENT_OFFLINE_GRACE_MS = 30000;
 
 io.on("connection", (socket) => {
   console.log(
@@ -1232,6 +1234,7 @@ io.on("connection", (socket) => {
           computerName,
           osInfo,
           unattendedAccess,
+          sessionId,
         } = data;
 
         if (!supportCode) {
@@ -1253,6 +1256,11 @@ io.on("connection", (socket) => {
           }
         );
         activeClientSockets.set(supportCode, socket.id);
+        const pendingOffline = clientOfflineTimers.get(supportCode);
+        if (pendingOffline) {
+          clearTimeout(pendingOffline);
+          clientOfflineTimers.delete(supportCode);
+        }
 
         deviceAccessState.set(
           supportCode,
@@ -1266,7 +1274,7 @@ io.on("connection", (socket) => {
           supabase
             .from("devices")
             .update({
-              status: "waiting",
+              status: sessionId ? "connected" : "waiting",
               computer_name:
                 computerName ||
                 "Unknown Device",
@@ -1297,7 +1305,8 @@ io.on("connection", (socket) => {
               computerName ||
               "Unknown Device",
             osInfo: osInfo || "",
-            status: "waiting",
+            status: sessionId ? "connected" : "waiting",
+            sessionId,
             unattendedAccess:
               !!unattendedAccess,
             socketId: socket.id,
@@ -1908,34 +1917,24 @@ io.on("connection", (socket) => {
             return;
           }
           activeClientSockets.delete(meta.deviceCode);
-          io.emit(
-            "client-status-update",
-            {
-              supportCode:
-                meta.deviceCode,
-              status: "offline",
+          const supportCode = meta.deviceCode;
+          const offlineTimer = setTimeout(() => {
+            clientOfflineTimers.delete(supportCode);
+            if (activeClientSockets.has(supportCode)) return;
+            io.emit("client-status-update", { supportCode, status: "offline" });
+            if (supabase) {
+              supabase
+                .from("devices")
+                .update({ status: "offline" })
+                .eq("support_code", supportCode)
+                .then(({ error }) => {
+                  if (error) console.error("[disconnect database]", error);
+                });
             }
-          );
-
-          if (supabase) {
-            supabase
-              .from("devices")
-              .update({
-                status: "offline",
-              })
-              .eq(
-                "support_code",
-                meta.deviceCode
-              )
-              .then(({ error }) => {
-                if (error) {
-                  console.error(
-                    "[disconnect database]",
-                    error
-                  );
-                }
-              });
-          }
+            console.log("[Socket] client offline after reconnect grace:", supportCode);
+          }, CLIENT_OFFLINE_GRACE_MS);
+          clientOfflineTimers.set(supportCode, offlineTimer);
+          console.log("[Socket] client disconnected; waiting for reconnect:", supportCode);
         }
 
         socketMeta.delete(
