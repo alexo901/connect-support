@@ -25,8 +25,8 @@ export async function GET(req: NextRequest) {
 
     // Return the stub installer info — the actual .exe embeds the code
     // The installer is a lightweight stub that downloads the full agent at runtime
-    const serverUrl = process.env.NEXT_PUBLIC_SOCKET_URL ||
-      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
+    const serverUrl = process.env.SOCKET_SERVER_URL ||
+      "https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net";
 
     return NextResponse.json({
       valid: true,

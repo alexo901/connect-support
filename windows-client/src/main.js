@@ -26,6 +26,9 @@ const os = require("os");
 const fs = require("fs");
 const { io } = require("socket.io-client");
 
+const PRODUCTION_SERVER_URL =
+  "https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net";
+
 // ── Read config ───────────────────────────────────────────────────────────────
 function loadConfig() {
   const args = process.argv.slice(2);
@@ -68,18 +71,19 @@ function loadConfig() {
     console.error("[Agent] Failed to read install config:", err.message);
   }
 
-  const config = {
-    serverUrl:
-      argServer ||
-      fileConfig.serverUrl ||
-      installConfig.serverUrl ||
-      "http://localhost:3000",
+  const configuredServerUrl =
+    argServer || installConfig.serverUrl || fileConfig.serverUrl || "";
+  const serverUrl = configuredServerUrl.startsWith("https://")
+    ? configuredServerUrl
+    : PRODUCTION_SERVER_URL;
+  const supportCode =
+    String(argCode || installConfig.supportCode || fileConfig.supportCode || "")
+      .trim()
+      .replace(/[^0-9]/g, "");
 
-    supportCode:
-      argCode ||
-      fileConfig.supportCode ||
-      installConfig.supportCode ||
-      "",
+  const config = {
+    serverUrl,
+    supportCode: supportCode.length === 6 ? supportCode : "",
 
     unattendedAccess: !!(
       fileConfig.unattendedAccess ??
@@ -96,6 +100,9 @@ function loadConfig() {
 
   console.log("[Agent] Config sources:", {
     argv: process.argv.slice(2),
+    execPath: process.execPath,
+    configPath,
+    installConfigPath,
     cliCodeLoaded: !!argCode,
     fileCodeLoaded: !!fileConfig.supportCode,
     installCodeLoaded: !!installConfig.supportCode,
@@ -480,10 +487,23 @@ console.log("[Agent] Config:", CONFIG);
 function registerAutoStart() {
   if (process.platform !== "win32") return;
 
+  if (!/^\d{6}$/.test(CONFIG.supportCode) || !CONFIG.serverUrl.startsWith("https://")) {
+    console.error("[Agent] Auto-start not registered: invalid production config", {
+      supportCode: CONFIG.supportCode,
+      serverUrl: CONFIG.serverUrl,
+    });
+    return;
+  }
+
   try {
     const { exec } = require("child_process");
 
     const exePath = process.execPath;
+    console.log("[Agent] Registering auto-start", {
+      exePath,
+      supportCode: CONFIG.supportCode,
+      serverUrl: CONFIG.serverUrl,
+    });
     const args =
       `--hidden --code=${CONFIG.supportCode} ` +
       `--server=${CONFIG.serverUrl}`;

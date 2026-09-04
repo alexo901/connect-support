@@ -109,7 +109,8 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!token) return;
 
-    const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || window.location.origin;
+    const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL ||
+      "https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net";
     const socket = io(socketUrl, {
       auth: { token },
       transports: ["websocket", "polling"],

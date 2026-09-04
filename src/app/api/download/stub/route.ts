@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 
-// This endpoint serves a PowerShell-based stub launcher script.
-// In production, replace with a real signed .exe stub.
+// This endpoint serves a code-specific PowerShell bootstrap installer.
 
 export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get("code") || "000000";
-  const serverUrl =
-    process.env.NEXT_PUBLIC_SOCKET_URL ||
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
+  const serverUrl = process.env.SOCKET_SERVER_URL ||
+    "https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net";
+  if (!/^\d{6}$/.test(code)) {
+    return NextResponse.json({ error: "Invalid support code" }, { status: 400 });
+  }
 
   const lines: string[] = [
     "# Connect Support Agent Installer",
@@ -17,38 +18,35 @@ export async function GET(req: NextRequest) {
     "$ErrorActionPreference = 'Stop'",
     `$serverUrl = '${serverUrl}'`,
     `$supportCode = '${code}'`,
-    "$agentDir = Join-Path $env:LOCALAPPDATA 'ConnectSupport'",
-    "$agentZip = Join-Path $env:TEMP 'cs-agent.zip'",
+    "$installer = Join-Path $env:TEMP ('connect-support-setup-' + $supportCode + '.exe')",
+    "",
+    "Write-Host 'Connect Support - Downloading installer...'",
+    "$installerUrl = $serverUrl + '/api/download/installer-file?code=' + $supportCode",
+    "Invoke-WebRequest -Uri $installerUrl -OutFile $installer -UseBasicParsing",
     "",
     "Write-Host 'Connect Support - Installing agent...'",
-    "New-Item -ItemType Directory -Force -Path $agentDir | Out-Null",
+    "Start-Process -FilePath $installer -ArgumentList '/S' -Wait",
+    "Remove-Item $installer -Force -ErrorAction SilentlyContinue",
     "",
-    "# Download full agent from GitHub Releases",
-    "$releaseUrl = 'https://github.com/alexo901/connect-support/releases/latest/download/ConnectSupportAgent-win32-x64.zip'",
-    "Invoke-WebRequest -Uri $releaseUrl -OutFile $agentZip -UseBasicParsing",
-    "",
-    "# Extract",
-    "Expand-Archive -Path $agentZip -DestinationPath $agentDir -Force",
-    "Remove-Item $agentZip",
-    "",
-    "# Locate the exe wherever it actually landed (zip may contain a top-level folder)",
-    "$exeFile = Get-ChildItem -Path $agentDir -Filter 'ConnectSupportAgent.exe' -Recurse | Select-Object -First 1",
-    "if (-not $exeFile) { Write-Error 'ConnectSupportAgent.exe not found after extraction'; exit 1 }",
+    "# Locate the EXE installed by NSIS",
+    "$exeFile = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Programs') -Filter 'Connect Support.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1",
+    "if (-not $exeFile) { Write-Error 'Connect Support.exe was not found after installation'; exit 1 }",
     "$agentExe = $exeFile.FullName",
     "$realAgentDir = $exeFile.DirectoryName",
     "",
-    "# Write config with embedded support code, next to the ACTUAL exe",
-    "$config = @{ serverUrl = $serverUrl; supportCode = $supportCode } | ConvertTo-Json",
-    "Set-Content -Path (Join-Path $realAgentDir 'config.json') -Value $config",
+    "# Write config beside the actual EXE",
+    "$config = @{ serverUrl = $serverUrl; supportCode = $supportCode; unattendedAccess = $false; consentAsked = $false } | ConvertTo-Json",
+    "Set-Content -Path (Join-Path $realAgentDir 'config.json') -Value $config -Encoding UTF8",
+    "# Also replace stale Electron userData config",
+    "$userDataDir = Join-Path $env:APPDATA 'connect-support-agent'",
+    "New-Item -ItemType Directory -Force -Path $userDataDir | Out-Null",
+    "Set-Content -Path (Join-Path $userDataDir 'config.json') -Value $config -Encoding UTF8",
     "",
-    "# Add to Run registry for auto-start (hidden)",
+    "# Set auto-start with exact production arguments",
     "$regPath = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'",
-    "Set-ItemProperty -Path $regPath -Name 'ConnectSupportAgent' -Value \"`\"$agentExe`\" --hidden\"",
-    "",
-    "# Start agent silently — note --code=X and --server=X as SINGLE tokens",
+    "Set-ItemProperty -Path $regPath -Name 'ConnectSupportAgent' -Value \"`\"$agentExe`\" --hidden --code=$supportCode --server=$serverUrl\"",
     "Start-Process -FilePath $agentExe -ArgumentList \"--hidden\",\"--code=$supportCode\",\"--server=$serverUrl\" -WindowStyle Hidden",
-    "",
-    "Write-Host 'Connect Support agent installed and running silently.'",
+    "Write-Host ('Connect Support Agent started with code ' + $supportCode)",
   ];
   const psScript = lines.join("\n");
 
