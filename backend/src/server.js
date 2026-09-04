@@ -1552,12 +1552,9 @@ io.on("connection", (socket) => {
           return;
         }
 
-        io.to(
-          technicianSockets
-        ).emit(
-          "stream-frame",
-          data
-        );
+        for (const technicianSocketId of technicianSockets) {
+          io.sockets.sockets.get(technicianSocketId)?.emit("stream-frame", data);
+        }
         console.log("[Backend] Frame forwarded", {
           room,
           targets: technicianSockets.length,

@@ -1285,6 +1285,10 @@ function connectSocket() {
     );
 
     activeSessionId = sessionId || activeSessionId;
+    console.log("[Agent] Approved session received; starting capture", {
+      sessionId: activeSessionId,
+      connected: socket.connected,
+    });
     startApprovedSession();
   });
 

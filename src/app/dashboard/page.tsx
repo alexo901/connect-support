@@ -67,6 +67,7 @@ export default function DashboardPage() {
   const [activeMonitor, setActiveMonitor] = useState(0);
   const [frameCount, setFrameCount] = useState(0);
   const [fps, setFps] = useState(0);
+  const [hasReceivedFrame, setHasReceivedFrame] = useState(false);
 
   // Chat state
   const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
@@ -160,6 +161,7 @@ export default function DashboardPage() {
         hasCanvas: !!canvasRef.current,
       });
       if (!data?.frame || !canvasRef.current) return;
+      setHasReceivedFrame(true);
       frameCountRef.current++;
       if (data.monitors) setMonitors(data.monitors);
 
@@ -231,6 +233,7 @@ export default function DashboardPage() {
     // Tech disconnected (self echo)
     socket.on("tech-disconnected", () => {
       setSessionActive(false);
+      setHasReceivedFrame(false);
     });
 
     // FPS counter
@@ -310,6 +313,7 @@ export default function DashboardPage() {
   // ── Session controls ────────────────────────────────────────────────────────
   async function connectToDevice(device: Device) {
     setSelectedDevice(device);
+    setHasReceivedFrame(false);
     setChatMessages([]);
     setNotes("");
     setBlankScreen(false);
@@ -326,13 +330,27 @@ export default function DashboardPage() {
         const data = await res.json();
         setActiveSession(data.session);
 
-        // Signal to client
-        socketRef.current?.emit("tech-connect-request", {
-          supportCode: device.supportCode,
-          sessionId: data.session.id,
-        });
+        const sendRequest = () => {
+          const activeSocket = socketRef.current;
+          if (!activeSocket?.connected) {
+            notify("Signaling connection is unavailable. Please try again.", "error");
+            return;
+          }
+          activeSocket.emit("tech-connect-request", {
+            supportCode: device.supportCode,
+            sessionId: data.session.id,
+          });
+          notify(`Connecting to ${device.computerName}…`, "info");
+        };
 
-        notify(`Connecting to ${device.computerName}…`, "info");
+        if (socketRef.current?.connected) {
+          sendRequest();
+        } else if (socketRef.current) {
+          notify("Reconnecting to signaling server…", "info");
+          socketRef.current.once("connect", sendRequest);
+        } else {
+          notify("Signaling connection is unavailable. Please try again.", "error");
+        }
       }
     } catch {
       notify("Failed to start session", "error");
@@ -906,7 +924,7 @@ export default function DashboardPage() {
                   🔒 Client Inputs LOCKED
                 </div>
               )}
-              {fps === 0 && (
+              {!hasReceivedFrame && fps === 0 && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/50 pointer-events-none">
                   <div className="text-center">
                     <div className="w-8 h-8 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mx-auto mb-3"></div>

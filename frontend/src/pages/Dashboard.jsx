@@ -240,8 +240,20 @@ export default function Dashboard() {
       const r = await fetch(`${API}/api/sessions`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ deviceId: device.id, device_id: device.id }) });
       if (r.ok) {
         const d = await r.json(); setActiveSession(d.session);
-        socketRef.current?.emit("tech-connect-request", { supportCode: device.supportCode, sessionId: d.session.id });
-        notify(`Connecting to ${device.computerName || device.supportCode}…`, "info");
+        const sendRequest = () => {
+          const activeSocket = socketRef.current;
+          if (!activeSocket?.connected) {
+            notify("Signaling connection is unavailable. Please try again.", "error");
+            return;
+          }
+          activeSocket.emit("tech-connect-request", { supportCode: device.supportCode, sessionId: d.session.id });
+          notify(`Connecting to ${device.computerName || device.supportCode}…`, "info");
+        };
+        if (socketRef.current?.connected) sendRequest();
+        else if (socketRef.current) {
+          notify("Reconnecting to signaling server…", "info");
+          socketRef.current.once("connect", sendRequest);
+        } else notify("Signaling connection is unavailable. Please try again.", "error");
       } else { const d = await r.json().catch(() => ({})); notify(d.error || `Connect failed (${r.status})`, "error"); }
     } catch { notify("Failed to start session","error"); }
   }
