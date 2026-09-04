@@ -35,7 +35,7 @@ export function initIO(httpServer: HTTPServer): IOServer {
       (data: { supportCode: string; computerName: string; osInfo?: string }) => {
         const room = `device-${data.supportCode}`;
         socket.join(room);
-        socketMeta.set(socket.id, { role: "client", deviceId: data.supportCode });
+        socketMeta.set(socket.id, { role: "client", deviceCode: data.supportCode, deviceId: data.supportCode });
 
         // Notify dashboard that this code is now waiting
         io.emit("client-status-update", {

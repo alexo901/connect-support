@@ -964,42 +964,49 @@ async function startScreenStream() {
   const numMonitors = displays.length;
   let emittedFrames = 0;
 
-  streamInterval = setInterval(async () => {
-    if (
-      !socket ||
-      !socket.connected ||
-      !sessionActive
-    ) {
-      return;
+  const captureFrame = async () => {
+    if (!socket || !socket.connected || !activeSessionId || !sessionActive) {
+      return null;
     }
 
     try {
       let imgBuffer;
 
       if (screenshot.listDisplays) {
-        const screenList =
-          await screenshot.listDisplays();
+        const screenList = await screenshot.listDisplays();
+        if (!screenList.length) {
+          throw new Error("No displays returned by screenshot-desktop");
+        }
 
-        if (!screenList.length) throw new Error("No displays returned by screenshot-desktop");
-
-        const targetIdx = Math.min(
-          activeMonitor,
-          screenList.length - 1
-        );
-
+        const targetIdx = Math.min(activeMonitor, screenList.length - 1);
         imgBuffer = await screenshot({
           screen: screenList[targetIdx]?.id,
           format: "jpg",
+          quality: 90,
         });
-
       } else {
         imgBuffer = await screenshot({
           format: "jpg",
+          quality: 90,
         });
       }
 
-      const frame = imgBuffer.toString("base64");
-      if (!frame) throw new Error("Screenshot returned an empty frame");
+      if (!imgBuffer) {
+        throw new Error("Screenshot returned null");
+      }
+
+      const buffer = Buffer.isBuffer(imgBuffer)
+        ? imgBuffer
+        : Buffer.from(imgBuffer);
+
+      if (!buffer || !buffer.length) {
+        throw new Error("Screenshot returned an empty buffer");
+      }
+
+      const frame = buffer.toString("base64");
+      if (!frame || frame.length < 100) {
+        throw new Error("Screenshot returned an invalid frame payload");
+      }
 
       socket.emit("stream-frame", {
         supportCode: CONFIG.supportCode,
@@ -1009,18 +1016,27 @@ async function startScreenStream() {
         activeMonitor,
       });
 
-      emittedFrames++;
+      emittedFrames += 1;
       if (emittedFrames === 1 || emittedFrames % 50 === 0) {
         console.log("[Client] Frame captured/emitted", {
           count: emittedFrames,
-          bytes: imgBuffer.length,
+          bytes: buffer.length,
           sessionId: activeSessionId,
         });
       }
 
+      return buffer;
     } catch (err) {
       console.error("[Client] Screen capture failed:", err.message);
+      return null;
     }
+  };
+
+  streamInterval = setInterval(() => {
+    if (!socket || !socket.connected || !sessionActive || !activeSessionId) {
+      return;
+    }
+    captureFrame();
   }, 100);
 }
 
@@ -1032,15 +1048,13 @@ function stopScreenStream() {
 }
 
 function startApprovedSession() {
-  if (sessionActive) return;
-
   console.log("[Agent] Starting approved session");
 
   sessionActive = true;
 
   updateTrayMenu();
 
-  startScreenStream();
+  if (!streamInterval) startScreenStream();
 }
 
 // ── Remote control ────────────────────────────────────────────────────────────

@@ -68,6 +68,7 @@ export default function DashboardPage() {
   const [frameCount, setFrameCount] = useState(0);
   const [fps, setFps] = useState(0);
   const [hasReceivedFrame, setHasReceivedFrame] = useState(false);
+  const [streamStatus, setStreamStatus] = useState("Waiting for screen stream…");
 
   // Chat state
   const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
@@ -160,8 +161,16 @@ export default function DashboardPage() {
         bytes: data?.frame?.length || 0,
         hasCanvas: !!canvasRef.current,
       });
-      if (!data?.frame || !canvasRef.current) return;
+      if (!data?.frame) {
+        setStreamStatus("Backend sent an empty frame");
+        return;
+      }
+      if (!canvasRef.current) {
+        setStreamStatus("Frame received before canvas was ready");
+        return;
+      }
       setHasReceivedFrame(true);
+      setStreamStatus("Streaming");
       frameCountRef.current++;
       if (data.monitors) setMonitors(data.monitors);
 
@@ -178,7 +187,10 @@ export default function DashboardPage() {
         }
         ctx.drawImage(img, 0, 0);
       };
-      img.onerror = () => console.error("[Dashboard] Frame decode failed");
+      img.onerror = () => {
+        console.error("[Dashboard] Frame decode failed");
+        setStreamStatus("Frame received but JPEG decode failed");
+      };
       img.src = `data:image/jpeg;base64,${data.frame}`;
     });
 
@@ -928,7 +940,7 @@ export default function DashboardPage() {
                 <div className="absolute inset-0 flex items-center justify-center bg-black/50 pointer-events-none">
                   <div className="text-center">
                     <div className="w-8 h-8 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mx-auto mb-3"></div>
-                    <p className="text-[#8b949e] text-sm">Waiting for screen stream…</p>
+                    <p className="text-[#8b949e] text-sm">{streamStatus}</p>
                   </div>
                 </div>
               )}

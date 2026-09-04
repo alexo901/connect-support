@@ -31,10 +31,12 @@ export default function Dashboard() {
   const username  = localStorage.getItem("cs_username") || "Technician";
 
   const [devices, setDevices]             = useState([]);
+  const [selectedForDelete, setSelectedForDelete] = useState([]);
   const [editingDeviceId, setEditingDeviceId] = useState(null);
   const [editingDeviceName, setEditingDeviceName] = useState("");
   const [sessions, setSessions]           = useState([]);
   const [selectedDevice, setSelectedDevice] = useState(null);
+  const [pendingConnectId, setPendingConnectId] = useState(null);
   const [activeSession, setActiveSession]   = useState(null);
   const [sessionActive, setSessionActive]   = useState(false);
   const [isConnected, setIsConnected]       = useState(false);
@@ -98,8 +100,8 @@ export default function Dashboard() {
       });
     });
 
-    socket.on("connection-approved", () => { notify("Client approved!","success"); setSessionActive(true); });
-    socket.on("connection-rejected", () => { notify("Client declined the request","error"); });
+    socket.on("connection-approved", () => { notify("Client approved!","success"); setPendingConnectId(null); setSessionActive(true); });
+    socket.on("connection-rejected", () => { notify("Client declined the request","error"); setPendingConnectId(null); });
 
     socket.on("stream-frame", (data) => {
       console.log("[Dashboard] Frame received", {
@@ -223,19 +225,43 @@ export default function Dashboard() {
       notify("Device renamed", "success");
     } catch { notify("Failed to rename device", "error"); }
   }
-  async function deleteDevice(id) {
-    try {
-      const r = await fetch(`${API}/api/devices/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
-      if (!r.ok) { const data = await r.json().catch(() => ({})); notify(data.error || `Remove failed (${r.status})`, "error"); return; }
-      setDevices(p => p.filter(d => d.id !== id));
-      if (selectedDevice?.id === id) { setSelectedDevice(null); setSessionActive(false); }
-      notify("Device removed", "success");
-    } catch { notify("Failed to remove device", "error"); }
+  function toggleDeleteSelection(deviceId) {
+    setSelectedForDelete(prev => prev.includes(deviceId)
+      ? prev.filter(id => id !== deviceId)
+      : [...prev, deviceId]);
+  }
+
+  async function deleteSelectedDevices() {
+    if (!selectedForDelete.length) return;
+    const confirmed = window.confirm(`Delete ${selectedForDelete.length} selected device${selectedForDelete.length > 1 ? "s" : ""}?`);
+    if (!confirmed) return;
+
+    for (const id of selectedForDelete) {
+      try {
+        const r = await fetch(`${API}/api/devices/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+        if (!r.ok) {
+          const data = await r.json().catch(() => ({}));
+          notify(data.error || `Remove failed (${r.status})`, "error");
+        }
+      } catch {
+        notify("Failed to remove device", "error");
+      }
+    }
+
+    setDevices(prev => prev.filter(device => !selectedForDelete.includes(device.id)));
+    if (selectedForDelete.includes(selectedDevice?.id)) {
+      setSelectedDevice(null);
+      setSessionActive(false);
+    }
+    setSelectedForDelete([]);
+    notify("Selected devices removed", "success");
   }
 
   // ── Session ──────────────────────────────────────────────────────────────────
   async function connectToDevice(device) {
-    setSelectedDevice(device); setChatMessages([]); setNotes(""); setBlankScreen(false); setInputLocked(false);
+    setSelectedDevice(device);
+    setPendingConnectId(device.id);
+    setChatMessages([]); setNotes(""); setBlankScreen(false); setInputLocked(false);
     try {
       const r = await fetch(`${API}/api/sessions`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ deviceId: device.id, device_id: device.id }) });
       if (r.ok) {
@@ -244,6 +270,7 @@ export default function Dashboard() {
           const activeSocket = socketRef.current;
           if (!activeSocket?.connected) {
             notify("Signaling connection is unavailable. Please try again.", "error");
+            setPendingConnectId(null);
             return;
           }
           activeSocket.emit("tech-connect-request", { supportCode: device.supportCode, sessionId: d.session.id });
@@ -253,9 +280,12 @@ export default function Dashboard() {
         else if (socketRef.current) {
           notify("Reconnecting to signaling server…", "info");
           socketRef.current.once("connect", sendRequest);
-        } else notify("Signaling connection is unavailable. Please try again.", "error");
-      } else { const d = await r.json().catch(() => ({})); notify(d.error || `Connect failed (${r.status})`, "error"); }
-    } catch { notify("Failed to start session","error"); }
+        } else {
+          notify("Signaling connection is unavailable. Please try again.", "error");
+          setPendingConnectId(null);
+        }
+      } else { const d = await r.json().catch(() => ({})); setPendingConnectId(null); notify(d.error || `Connect failed (${r.status})`, "error"); }
+    } catch { setPendingConnectId(null); notify("Failed to start session","error"); }
   }
   async function disconnectSession() {
     if (!activeSession || !selectedDevice) return;
@@ -266,6 +296,7 @@ export default function Dashboard() {
     if (blankScreen) toggleBlankScreen(false);
     if (inputLocked) toggleInputLock(false);
     try { await fetch(`${API}/api/sessions/${activeSession.id}`, { method: "PATCH", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ ended: true, notes }) }); } catch {}
+    setPendingConnectId(null);
     setSessionActive(false); setActiveSession(null); setSelectedDevice(null); setBlankScreen(false); setInputLocked(false);
     notify("Session ended","info"); fetchSessions();
   }
@@ -490,19 +521,35 @@ export default function Dashboard() {
           </div>
           <div className="flex-1 overflow-y-auto">
             <div className="px-4 py-3 text-xs font-semibold text-[#8b949e] uppercase tracking-wider flex items-center justify-between">
-              <span>Devices</span><span className="bg-[#21262d] px-2 py-0.5 rounded-full text-[10px]">{devices.length}</span>
+              <span>Devices</span>
+              <div className="flex items-center gap-2">
+                <span className="bg-[#21262d] px-2 py-0.5 rounded-full text-[10px]">{devices.length}</span>
+                {selectedForDelete.length > 0 && (
+                  <button onClick={deleteSelectedDevices} title="Delete selected devices" className="p-1.5 rounded-lg border border-red-500/40 bg-red-500/10 text-red-400 hover:bg-red-500/20" aria-label="Delete selected devices">
+                    🗑️
+                  </button>
+                )}
+              </div>
             </div>
             {devices.length === 0 && <p className="text-xs text-[#8b949e] text-center py-6">No devices yet.</p>}
             {devices.map(device => (
               <div key={device.id} className={`px-4 py-3 border-b border-[#30363d]/50 hover:bg-[#21262d] cursor-pointer ${selectedDevice?.id === device.id ? "bg-[#21262d] border-l-2 border-l-[#2563eb]" : ""}`}
                 onClick={() => !sessionActive && setSelectedDevice(device)}>
-                <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <input
+                    type="checkbox"
+                    checked={selectedForDelete.includes(device.id)}
+                    onChange={e => { e.stopPropagation(); toggleDeleteSelection(device.id); }}
+                    onClick={e => e.stopPropagation()}
+                    className="h-4 w-4 rounded border-[#30363d] bg-[#0d1117] text-[#2563eb] focus:ring-[#2563eb]"
+                    aria-label={`Select ${device.computerName || "device"} for deletion`}
+                  />
                   {editingDeviceId === device.id ? (
                     <input autoFocus value={editingDeviceName} onChange={e => setEditingDeviceName(e.target.value)}
                       onBlur={() => renameDevice(device)} onKeyDown={e => { if (e.key === "Enter") renameDevice(device); if (e.key === "Escape") setEditingDeviceId(null); }}
                       onClick={e => e.stopPropagation()} className="w-full min-w-0 px-1 py-0.5 rounded bg-[#0d1117] border border-[#2563eb] text-sm text-white focus:outline-none" />
                   ) : (
-                    <span onDoubleClick={e => { e.stopPropagation(); startRename(device); }} title="Double-click to rename" className="text-sm font-medium text-white truncate pr-2">{device.computerName || "New Device"}</span>
+                    <span onDoubleClick={e => { e.stopPropagation(); startRename(device); }} title="Double-click to rename" className="text-sm font-medium text-white truncate pr-2 flex-1">{device.computerName || "New Device"}</span>
                   )}
                   <span className={`w-2 h-2 rounded-full flex-shrink-0 ${device.status === "connected" ? "bg-green-500" : device.status === "waiting" ? "bg-yellow-500 animate-pulse" : "bg-[#484f58]"}`}></span>
                 </div>
@@ -511,9 +558,10 @@ export default function Dashboard() {
                   <span className={`text-[10px] ${device.status === "connected" ? "text-green-400" : device.status === "waiting" ? "text-yellow-400" : "text-[#8b949e]"}`}>{device.status}</span>
                 </div>
                 {(device.status === "waiting" || device.status === "connected") && !sessionActive && (
-                  <button onClick={e => { e.stopPropagation(); connectToDevice(device); }} className="mt-2 w-full py-1.5 rounded-lg bg-[#2563eb] hover:bg-[#1d4ed8] text-white text-xs font-medium">Connect →</button>
+                  <button onClick={e => { e.stopPropagation(); connectToDevice(device); }} className={`mt-2 w-full py-1.5 rounded-lg text-xs font-medium ${pendingConnectId === device.id ? "bg-yellow-500/20 border border-yellow-500/40 text-yellow-300" : "bg-[#2563eb] hover:bg-[#1d4ed8] text-white"}`}>
+                    {pendingConnectId === device.id ? "Connecting…" : "Connect →"}
+                  </button>
                 )}
-                <button onClick={e => { e.stopPropagation(); deleteDevice(device.id); }} className="mt-1 w-full py-0.5 text-[10px] text-[#8b949e] hover:text-red-400">Remove</button>
               </div>
             ))}
             {sessions.length > 0 && (

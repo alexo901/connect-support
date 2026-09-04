@@ -1251,6 +1251,7 @@ io.on("connection", (socket) => {
           {
             role: "client",
             deviceCode: supportCode,
+            deviceId: supportCode,
             unattendedAccess:
               !!unattendedAccess,
           }
