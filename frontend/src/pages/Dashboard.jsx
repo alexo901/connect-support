@@ -91,7 +91,6 @@ export default function Dashboard() {
           const updated = [...prev];
           const old = updated[idx];
           updated[idx] = { ...old, ...data };
-          if (data.status === "waiting") setNewClientPopup(updated[idx]);
           return updated;
         }
         fetchDevices();
@@ -499,7 +498,7 @@ export default function Dashboard() {
                   <span className="font-mono text-xs text-[#3b82f6]">{device.supportCode}</span>
                   <span className={`text-[10px] ${device.status === "connected" ? "text-green-400" : device.status === "waiting" ? "text-yellow-400" : "text-[#8b949e]"}`}>{device.status}</span>
                 </div>
-                {device.status === "waiting" && !sessionActive && (
+                {(device.status === "waiting" || device.status === "connected") && !sessionActive && (
                   <button onClick={e => { e.stopPropagation(); connectToDevice(device); }} className="mt-2 w-full py-1.5 rounded-lg bg-[#2563eb] hover:bg-[#1d4ed8] text-white text-xs font-medium">Connect →</button>
                 )}
                 <button onClick={e => { e.stopPropagation(); deleteDevice(device.id); }} className="mt-1 w-full py-0.5 text-[10px] text-[#8b949e] hover:text-red-400">Remove</button>

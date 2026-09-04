@@ -136,10 +136,6 @@ export default function DashboardPage() {
         if (idx >= 0) {
           const updated = [...prev];
           updated[idx] = { ...updated[idx], ...data } as Device;
-          // Show popup when a new client connects (waiting)
-          if (data.status === "waiting" && prev[idx].status !== "waiting") {
-            setNewClientPopup(updated[idx]);
-          }
           return updated;
         }
         fetchDevices();
@@ -159,7 +155,11 @@ export default function DashboardPage() {
 
     // Screen frames
     socket.on("stream-frame", (data: { frame: string; monitors?: number; activeMonitor?: number }) => {
-      if (!canvasRef.current) return;
+      console.log("[Dashboard] Frame received", {
+        bytes: data?.frame?.length || 0,
+        hasCanvas: !!canvasRef.current,
+      });
+      if (!data?.frame || !canvasRef.current) return;
       frameCountRef.current++;
       if (data.monitors) setMonitors(data.monitors);
 
@@ -176,6 +176,7 @@ export default function DashboardPage() {
         }
         ctx.drawImage(img, 0, 0);
       };
+      img.onerror = () => console.error("[Dashboard] Frame decode failed");
       img.src = `data:image/jpeg;base64,${data.frame}`;
     });
 
@@ -801,7 +802,7 @@ export default function DashboardPage() {
                     {device.status}
                   </span>
                 </div>
-                {device.status === "waiting" && !sessionActive && (
+                {(device.status === "waiting" || device.status === "connected") && !sessionActive && (
                   <button
                     onClick={(e) => { e.stopPropagation(); connectToDevice(device); }}
                     className="mt-2 w-full py-1.5 rounded-lg bg-[#2563eb] hover:bg-[#1d4ed8] text-white text-xs font-medium transition-colors"

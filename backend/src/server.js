@@ -1508,8 +1508,21 @@ io.on("connection", (socket) => {
           typeof data.frame !== "string" ||
           !data.frame
         ) {
+          console.warn("[Backend] Dropping invalid stream frame", {
+            socketId: socket.id,
+            role: meta?.role,
+            deviceCode: meta?.deviceCode,
+            supportCode,
+            frameBytes: data.frame?.length || 0,
+          });
           return;
         }
+
+        console.log("[Backend] Frame received", {
+          supportCode,
+          sessionId: data.sessionId,
+          frameBytes: data.frame.length,
+        });
 
         const room =
           `device-${supportCode}`;
@@ -1526,18 +1539,16 @@ io.on("connection", (socket) => {
                 socketMeta.get(socketId);
 
               return (
-                targetMeta?.role ===
-                  "tech" &&
-                (
-                  !data.sessionId ||
-                  targetMeta.sessionId ===
-                    data.sessionId
-                )
+                targetMeta?.role === "tech"
               );
             }
           );
 
         if (!technicianSockets.length) {
+          console.warn("[Backend] No technician socket in room for frame", {
+            room,
+            sessionId: data.sessionId,
+          });
           return;
         }
 
@@ -1547,6 +1558,11 @@ io.on("connection", (socket) => {
           "stream-frame",
           data
         );
+        console.log("[Backend] Frame forwarded", {
+          room,
+          targets: technicianSockets.length,
+          sessionId: data.sessionId,
+        });
       } catch (err) {
         console.error(
           "[stream-frame]",
