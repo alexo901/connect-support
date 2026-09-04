@@ -1304,6 +1304,11 @@ io.on("connection", (socket) => {
           }
         );
 
+        console.log("[Backend] client-status-update waiting emitted", {
+          supportCode,
+          socketId: socket.id,
+        });
+
         console.log(
           "[Socket] client registered:",
           supportCode,

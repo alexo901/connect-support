@@ -131,6 +131,10 @@ function persistConfig() {
   }
 }
 
+if (CONFIG.supportCode && CONFIG.serverUrl.startsWith("https://")) {
+  persistConfig();
+}
+
 const IS_DEV = process.argv.includes("--dev");
 
 let setupWindow = null;
@@ -150,6 +154,11 @@ let currentMediaKey = "default-blue";
 let currentMediaType = "css";
 let currentMediaUrl = null;
 let activeSessionId = null;
+let registrationHeartbeat = null;
+
+if (CONFIG.supportCode && CONFIG.serverUrl.startsWith("https://")) {
+  persistConfig();
+}
 
 // ── Single instance ───────────────────────────────────────────────────────────
 const gotLock = app.requestSingleInstanceLock();
@@ -1193,6 +1202,22 @@ function connectSocket() {
       osInfo: `${os.type()} ${os.release()}`,
       unattendedAccess: CONFIG.unattendedAccess,
     });
+      console.log("[Agent] register-client emitted", {
+        supportCode: CONFIG.supportCode,
+        serverUrl: CONFIG.serverUrl,
+      });
+      if (registrationHeartbeat) clearInterval(registrationHeartbeat);
+      registrationHeartbeat = setInterval(() => {
+        if (socket?.connected) {
+          socket.emit("register-client", {
+            supportCode: CONFIG.supportCode,
+            computerName: os.hostname(),
+            osInfo: `${os.type()} ${os.release()}`,
+            unattendedAccess: CONFIG.unattendedAccess,
+          });
+          console.log("[Agent] register-client heartbeat emitted", CONFIG.supportCode);
+        }
+      }, 15000);
   });
 
   socket.on("disconnect", (reason) => {
@@ -1202,6 +1227,11 @@ function connectSocket() {
     );
 
     isConnected = false;
+
+    if (registrationHeartbeat) {
+      clearInterval(registrationHeartbeat);
+      registrationHeartbeat = null;
+    }
 
     endSession();
 

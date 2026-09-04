@@ -124,9 +124,13 @@ export default function DashboardPage() {
     socket.on("disconnect", () => {
       setIsConnected(false);
     });
+    socket.on("connect_error", (error) => {
+      console.error("[Dashboard] Socket connection error:", error.message);
+    });
 
     // A client just came online
     socket.on("client-status-update", (data: Partial<Device> & { supportCode: string; status: string }) => {
+      console.log("[Dashboard] Client status update:", data);
       setDevices((prev) => {
         const idx = prev.findIndex((d) => d.supportCode === data.supportCode);
         if (idx >= 0) {
