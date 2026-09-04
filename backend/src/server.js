@@ -1067,14 +1067,14 @@ app.get(
         valid: true,
         code,
         fileName:
-          `ConnectSupport-Setup-${code}.ps1`,
+          "Connect Support Web Setup 1.0.2.exe",
         downloadUrl:
           `/api/download/installer?code=${encodeURIComponent(
             code
           )}`,
         instructions: [
-          "Download the Connect Support Setup script.",
-          "Right-click the script and choose Run with PowerShell.",
+          "Download the Connect Support Setup installer.",
+          "Run the installer.",
           "The remaining application files will download automatically.",
           "The Connect Support Agent will start after installation.",
         ],
@@ -1117,35 +1117,16 @@ app.get(
         });
       }
 
-      const serverUrl = `${req.protocol}://${req.get("host")}`;
-      const releaseUrl = process.env.AGENT_RELEASE_URL ||
-        "https://github.com/alexo901/connect-support/releases/latest/download/ConnectSupportAgent-win32-x64.zip";
-      const lines = [
-        "$ErrorActionPreference = 'Stop'",
-        `$serverUrl = '${serverUrl}'`,
-        `$supportCode = '${code}'`,
-        "$agentDir = Join-Path $env:LOCALAPPDATA 'ConnectSupport'",
-        "$agentZip = Join-Path $env:TEMP ('connect-support-agent-' + $supportCode + '.zip')",
-        `$releaseUrl = '${releaseUrl}'`,
-        "New-Item -ItemType Directory -Force -Path $agentDir | Out-Null",
-        "Invoke-WebRequest -Uri $releaseUrl -OutFile $agentZip -UseBasicParsing",
-        "Expand-Archive -Path $agentZip -DestinationPath $agentDir -Force",
-        "Remove-Item $agentZip -Force",
-        "$exeFile = Get-ChildItem -Path $agentDir -Filter 'ConnectSupportAgent.exe' -Recurse | Select-Object -First 1",
-        "if (-not $exeFile) { throw 'ConnectSupportAgent.exe not found after extraction' }",
-        "$agentExe = $exeFile.FullName",
-        "$realAgentDir = $exeFile.DirectoryName",
-        "$config = @{ serverUrl = $serverUrl; supportCode = $supportCode; consentAsked = $false } | ConvertTo-Json",
-        "Set-Content -Path (Join-Path $realAgentDir 'config.json') -Value $config -Encoding UTF8",
-        "$regPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'",
-        "Set-ItemProperty -Path $regPath -Name 'ConnectSupportAgent' -Value \"`\"$agentExe`\" --hidden --code=$supportCode --server=$serverUrl\"",
-        "Start-Process -FilePath $agentExe -ArgumentList \"--hidden\",\"--code=$supportCode\",\"--server=$serverUrl\" -WindowStyle Hidden",
-        "Write-Host 'Connect Support Agent installed and started.'",
-      ];
-      res.setHeader("Content-Type", "text/plain; charset=utf-8");
-      res.setHeader("Content-Disposition", `attachment; filename=\"ConnectSupport-Setup-${code}.ps1\"`);
-      res.setHeader("Cache-Control", "no-store");
-      res.send(lines.join("\n"));
+      await streamInstallerFile(
+        "Connect Support Web Setup 1.0.2.exe",
+        req,
+        res,
+        {
+          attachment: true,
+          downloadName: "Connect Support Web Setup 1.0.2.exe",
+          noStore: true,
+        }
+      );
     } catch (err) {
       console.error(
         "[GET /api/download/installer]",
