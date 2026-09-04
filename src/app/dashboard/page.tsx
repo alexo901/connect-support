@@ -101,6 +101,8 @@ export default function DashboardPage() {
     if (!token) { router.push("/login"); return; }
     fetchDevices();
     fetchSessions();
+    const refreshTimer = window.setInterval(fetchDevices, 10000);
+    return () => window.clearInterval(refreshTimer);
   }, [token]);
 
   // Socket.io setup
@@ -135,6 +137,7 @@ export default function DashboardPage() {
           }
           return updated;
         }
+        fetchDevices();
         return prev;
       });
     });

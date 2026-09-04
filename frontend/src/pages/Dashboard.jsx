@@ -70,6 +70,10 @@ export default function Dashboard() {
 
   // Fetch data
   useEffect(() => { fetchDevices(); fetchSessions(); fetchSavedMedia(); }, []);
+  useEffect(() => {
+    const refreshTimer = window.setInterval(fetchDevices, 10000);
+    return () => window.clearInterval(refreshTimer);
+  }, []);
 
   // Socket
   useEffect(() => {
@@ -90,6 +94,7 @@ export default function Dashboard() {
           if (data.status === "waiting") setNewClientPopup(updated[idx]);
           return updated;
         }
+        fetchDevices();
         return prev;
       });
     });

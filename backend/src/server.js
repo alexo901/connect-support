@@ -1196,6 +1196,8 @@ const socketMeta = new Map();
 
 // supportCode → unattended state
 const deviceAccessState = new Map();
+// supportCode → currently registered client socket
+const activeClientSockets = new Map();
 
 io.on("connection", (socket) => {
   console.log(
@@ -1234,6 +1236,7 @@ io.on("connection", (socket) => {
               !!unattendedAccess,
           }
         );
+        activeClientSockets.set(supportCode, socket.id);
 
         deviceAccessState.set(
           supportCode,
@@ -1874,6 +1877,16 @@ io.on("connection", (socket) => {
           meta?.role === "client" &&
           meta.deviceCode
         ) {
+          if (activeClientSockets.get(meta.deviceCode) !== socket.id) {
+            socketMeta.delete(socket.id);
+            console.log(
+              "[Socket] stale client disconnected:",
+              socket.id,
+              meta.deviceCode
+            );
+            return;
+          }
+          activeClientSockets.delete(meta.deviceCode);
           io.emit(
             "client-status-update",
             {
