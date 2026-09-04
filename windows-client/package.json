@@ -1,6 +1,6 @@
 {
   "name": "connect-support-agent",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Connect Support Windows Agent",
   "main": "src/main.js",
   "author": "Connect Support",
@@ -53,7 +53,7 @@
     "publish": [
       {
         "provider": "generic",
-        "url": "https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net/downloads/"
+          "url": "https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net/downloads/"
       }
     ]
   },

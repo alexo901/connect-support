@@ -376,7 +376,12 @@ code.addEventListener("input", () => {
 });
 
 button.addEventListener("click", async () => {
-  if (!/^\d{6}$/.test(code.value.trim())) {
+  const supportCode = code.value.trim().replace(/[^0-9]/g, "");
+  console.log("[Agent] Setup code submitted", {
+    rawLength: code.value.length,
+    normalizedCode: supportCode,
+  });
+  if (supportCode.length !== 6) {
     error.textContent = "Enter exactly 6 digits.";
     return;
   }
@@ -384,7 +389,7 @@ button.addEventListener("click", async () => {
   button.disabled = true;
 
   const result =
-    await window.electronBridge.configure(code.value);
+    await window.electronBridge.configure(supportCode);
 
   if (!result.ok) {
     error.textContent = result.error;
@@ -411,7 +416,8 @@ code.addEventListener("keydown", (event) => {
 
 // ── IPC ───────────────────────────────────────────────────────────────────────
 ipcMain.handle("configure-agent", async (_event, supportCode) => {
-  if (!/^\d{6}$/.test(String(supportCode).trim())) {
+  const normalizedCode = String(supportCode ?? "").trim().replace(/[^0-9]/g, "");
+  if (normalizedCode.length !== 6) {
     return {
       ok: false,
       error: "Enter exactly 6 digits.",
@@ -420,7 +426,7 @@ ipcMain.handle("configure-agent", async (_event, supportCode) => {
 
   CONFIG = {
     ...CONFIG,
-    supportCode: String(supportCode).trim(),
+    supportCode: normalizedCode,
   };
 
   persistConfig();
