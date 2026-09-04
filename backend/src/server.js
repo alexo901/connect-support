@@ -1117,33 +1117,16 @@ app.get(
         });
       }
 
-      const serverUrl = `${req.protocol}://${req.get("host")}`;
-      const lines = [
-        "$ErrorActionPreference = 'Stop'",
-        `$serverUrl = '${serverUrl}'`,
-        `$supportCode = '${code}'`,
-        "$installer = Join-Path $env:TEMP ('connect-support-setup-' + $supportCode + '.exe')",
-        "$installerUrl = $serverUrl + '/api/download/installer-file?code=' + $supportCode",
-        "Invoke-WebRequest -Uri $installerUrl -OutFile $installer -UseBasicParsing",
-        "Start-Process -FilePath $installer -ArgumentList '/S' -Wait",
-        "Remove-Item $installer -Force -ErrorAction SilentlyContinue",
-        "$exeFile = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Programs') -Filter 'Connect Support.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1",
-        "if (-not $exeFile) { throw 'Connect Support.exe was not found after installation' }",
-        "$agentExe = $exeFile.FullName",
-        "$realAgentDir = $exeFile.DirectoryName",
-        "$config = @{ serverUrl = $serverUrl; supportCode = $supportCode; unattendedAccess = $false; consentAsked = $false } | ConvertTo-Json",
-        "Set-Content -Path (Join-Path $realAgentDir 'config.json') -Value $config -Encoding UTF8",
-        "$userDataDir = Join-Path $env:APPDATA 'connect-support-agent'",
-        "New-Item -ItemType Directory -Force -Path $userDataDir | Out-Null",
-        "Set-Content -Path (Join-Path $userDataDir 'config.json') -Value $config -Encoding UTF8",
-        "$regPath = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'",
-        "Set-ItemProperty -Path $regPath -Name 'ConnectSupportAgent' -Value \"`\"$agentExe`\" --hidden --code=$supportCode --server=$serverUrl\"",
-        "Start-Process -FilePath $agentExe -ArgumentList \"--hidden\",\"--code=$supportCode\",\"--server=$serverUrl\" -WindowStyle Hidden",
-      ];
-      res.setHeader("Content-Type", "text/plain; charset=utf-8");
-      res.setHeader("Content-Disposition", `attachment; filename=\"ConnectSupport-Setup-${code}.ps1\"`);
-      res.setHeader("Cache-Control", "no-store");
-      res.send(lines.join("\n"));
+      return streamInstallerFile(
+        "Connect Support Web Setup 1.0.2.exe",
+        req,
+        res,
+        {
+          attachment: true,
+          downloadName: "Connect Support Web Setup 1.0.2.exe",
+          noStore: true,
+        }
+      );
     } catch (err) {
       console.error(
         "[GET /api/download/installer]",
