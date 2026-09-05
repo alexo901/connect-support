@@ -28,6 +28,70 @@ const { io } = require("socket.io-client");
 
 const PRODUCTION_SERVER_URL =
   "https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net";
+const SERVICE_NAME = "ConnectSupportAgent";
+const SERVICE_DISPLAY_NAME = "Connect Support Agent";
+
+const isInstallService = process.argv.includes("--install-service");
+const isUninstallService = process.argv.includes("--uninstall-service");
+const isServiceMode = process.argv.includes("--service");
+
+function installWindowsService() {
+  if (process.platform !== "win32") {
+    console.error("[Service] This install command is only supported on Windows.");
+    process.exit(1);
+  }
+
+  const exePath = process.execPath;
+  const serviceBinary = `"${exePath}" --service`;
+
+  const commands = [
+    `sc create "${SERVICE_NAME}" binPath= "${serviceBinary}" start= auto obj= LocalSystem`,
+    `sc description "${SERVICE_NAME}" "${SERVICE_DISPLAY_NAME}"`,
+  ];
+
+  for (const cmd of commands) {
+    const result = require("child_process").spawnSync("cmd.exe", ["/c", cmd], {
+      stdio: "inherit",
+      shell: false,
+    });
+
+    if (result.error) {
+      console.error("[Service] Install command failed:", result.error);
+      process.exit(1);
+    }
+  }
+
+  console.log("[Service] Installed successfully:", SERVICE_NAME);
+  process.exit(0);
+}
+
+function uninstallWindowsService() {
+  if (process.platform !== "win32") {
+    console.error("[Service] This uninstall command is only supported on Windows.");
+    process.exit(1);
+  }
+
+  const result = require("child_process").spawnSync("cmd.exe", ["/c", `sc delete "${SERVICE_NAME}"`], {
+    stdio: "inherit",
+    shell: false,
+  });
+
+  if (result.error) {
+    console.error("[Service] Uninstall command failed:", result.error);
+    process.exit(1);
+  }
+
+  console.log("[Service] Uninstalled successfully:", SERVICE_NAME);
+  process.exit(0);
+}
+
+if (isInstallService) {
+  installWindowsService();
+}
+
+if (isUninstallService) {
+  uninstallWindowsService();
+}
 
 // ── Read config ───────────────────────────────────────────────────────────────
 function loadConfig() {
@@ -501,51 +565,6 @@ ipcMain.handle("save-consent", async (_event, enabled) => {
 console.log("[Agent] Config:", CONFIG);
 
 // ── Auto start ────────────────────────────────────────────────────────────────
-function registerAutoStart() {
-  if (process.platform !== "win32") return;
-
-  if (!/^\d{6}$/.test(CONFIG.supportCode) || !CONFIG.serverUrl.startsWith("https://")) {
-    console.error("[Agent] Auto-start not registered: invalid production config", {
-      supportCode: CONFIG.supportCode,
-      serverUrl: CONFIG.serverUrl,
-    });
-    return;
-  }
-
-  try {
-    const exePath = app.getPath("exe");
-    const args = ["--hidden", `--code=${CONFIG.supportCode}`, `--server=${CONFIG.serverUrl}`];
-
-    app.setLoginItemSettings({
-      openAtLogin: true,
-      path: exePath,
-      args,
-      enabled: true,
-    });
-
-    console.log("[Agent] Windows login auto-start enabled", {
-      exePath,
-      args,
-    });
-  } catch (err) {
-    console.error("[Agent] Failed to register auto-start:", err.message);
-  }
-}
-
-function unregisterAutoStart() {
-  if (process.platform !== "win32") return;
-
-  try {
-    app.setLoginItemSettings({
-      openAtLogin: false,
-      enabled: false,
-    });
-    console.log("[Agent] Windows login auto-start disabled");
-  } catch (err) {
-    console.error("[Agent] Failed to disable auto-start:", err.message);
-  }
-}
-
 // ── Tray ──────────────────────────────────────────────────────────────────────
 function createTray() {
   const iconPath = path.join(
@@ -1440,6 +1459,16 @@ function connectSocket() {
 
 // ── App startup ────────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
+  if (isServiceMode) {
+    console.log("[Service] Starting in service mode");
+
+    if (CONFIG.supportCode && CONFIG.serverUrl.startsWith("https://")) {
+      connectSocket();
+    }
+
+    return;
+  }
+
   if (process.platform === "darwin") {
     app.dock?.hide();
   }
@@ -1496,10 +1525,6 @@ app.whenReady().then(() => {
     console.log("[Agent] Showing setup window");
     showSetupWindow();
   }
-
-  setTimeout(() => {
-    registerAutoStart();
-  }, 1000);
 
   if (IS_DEV) {
     const devWin = new BrowserWindow({
