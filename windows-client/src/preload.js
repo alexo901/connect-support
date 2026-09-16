@@ -10,6 +10,9 @@ contextBridge.exposeInMainWorld("electronBridge", {
   configure: (supportCode) => ipcRenderer.invoke("configure-agent", supportCode),
   saveConsent: (enabled) => ipcRenderer.invoke("save-consent", enabled),
   respondToApproval: (approved) => ipcRenderer.invoke("approval-response", approved),
+  onStartWebRTC: (callback) => ipcRenderer.on("start-webrtc-stream", (_e, data) => callback(data)),
+  onSignalIncoming: (callback) => ipcRenderer.on("webrtc-signaling-incoming", (_e, data) => callback(data)),
+  sendSignalOutgoing: (data) => ipcRenderer.send("send-webrtc-signaling", data),
   onMessage: (channel, callback) => {
     const validChannels = ["update-status", "toggle-lock-banner"];
     if (validChannels.includes(channel)) {

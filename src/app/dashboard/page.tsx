@@ -92,8 +92,9 @@ export default function DashboardPage() {
   // Popup: new client connected
   const [newClientPopup, setNewClientPopup] = useState<Device | null>(null);
 
-  // Canvas
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Remote video / WebRTC
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const socketRef = useRef<Socket | null>(null);
   const fpsTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const frameCountRef = useRef(0);
@@ -155,43 +156,67 @@ export default function DashboardPage() {
       notify(`Client rejected connection (${data.supportCode})`, "error");
     });
 
-    // Screen frames
-    socket.on("stream-frame", (data: { frame: string; monitors?: number; activeMonitor?: number }) => {
-      console.log("[Dashboard] Frame received", {
-        bytes: data?.frame?.length || 0,
-        hasCanvas: !!canvasRef.current,
-      });
-      if (!data?.frame) {
-        setStreamStatus("Backend sent an empty frame");
-        return;
+    // WebRTC signaling
+    socket.on("webrtc-signaling", async (data: { supportCode?: string; sessionId?: string; type?: string; sdp?: string; candidate?: RTCIceCandidateInit }) => {
+      if (!selectedDevice && data.supportCode) {
+        const device = devices.find((d) => d.supportCode === data.supportCode);
+        if (!device) return;
+        setSelectedDevice(device);
       }
-      if (!canvasRef.current) {
-        setStreamStatus("Frame received before canvas was ready");
-        return;
-      }
-      setHasReceivedFrame(true);
-      setStreamStatus("Streaming");
-      frameCountRef.current++;
-      if (data.monitors) setMonitors(data.monitors);
 
-      const img = new globalThis.Image();
-      img.onload = () => {
-        const ctx = canvasRef.current?.getContext("2d");
-        if (!ctx || !canvasRef.current) return;
-        if (
-          canvasRef.current.width !== img.width ||
-          canvasRef.current.height !== img.height
-        ) {
-          canvasRef.current.width = img.width;
-          canvasRef.current.height = img.height;
+      const targetDevice = selectedDevice || devices.find((d) => d.supportCode === data.supportCode) || null;
+      if (!targetDevice) return;
+
+      if (!peerConnectionRef.current) {
+        const peerConnection = new RTCPeerConnection({
+          iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+        });
+
+        peerConnection.ontrack = (event) => {
+          const [stream] = event.streams;
+          if (remoteVideoRef.current && stream) {
+            remoteVideoRef.current.srcObject = stream;
+          }
+          setHasReceivedFrame(true);
+          setStreamStatus("Streaming");
+        };
+
+        peerConnection.onicecandidate = (event) => {
+          if (event.candidate) {
+            socket.emit("webrtc-signaling", {
+              supportCode: targetDevice.supportCode,
+              sessionId: activeSession?.id || data.sessionId,
+              type: "candidate",
+              candidate: event.candidate.toJSON(),
+            });
+          }
+        };
+
+        peerConnectionRef.current = peerConnection;
+      }
+
+      const peerConnection = peerConnectionRef.current;
+      if (!peerConnection) return;
+
+      try {
+        if (data.type === "offer") {
+          await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp: data.sdp || "" }));
+          const answer = await peerConnection.createAnswer();
+          await peerConnection.setLocalDescription(answer);
+          socket.emit("webrtc-signaling", {
+            supportCode: targetDevice.supportCode,
+            sessionId: activeSession?.id || data.sessionId,
+            type: "answer",
+            sdp: answer.sdp,
+          });
+        } else if (data.type === "candidate" && data.candidate) {
+          await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+        } else if (data.type === "answer") {
+          await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: data.sdp || "" }));
         }
-        ctx.drawImage(img, 0, 0);
-      };
-      img.onerror = () => {
-        console.error("[Dashboard] Frame decode failed");
-        setStreamStatus("Frame received but JPEG decode failed");
-      };
-      img.src = `data:image/jpeg;base64,${data.frame}`;
+      } catch (err) {
+        console.error("[Dashboard] WebRTC signaling error:", err);
+      }
     });
 
     // Chat
@@ -396,9 +421,9 @@ export default function DashboardPage() {
 
   // ── Remote control events ───────────────────────────────────────────────────
   const handleCanvasMouseMove = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (!sessionActive || !selectedDevice || !canvasRef.current) return;
-      const rect = canvasRef.current.getBoundingClientRect();
+    (e: React.MouseEvent<HTMLVideoElement>) => {
+      if (!sessionActive || !selectedDevice || !remoteVideoRef.current) return;
+      const rect = remoteVideoRef.current.getBoundingClientRect();
       const x = (e.clientX - rect.left) / rect.width;
       const y = (e.clientY - rect.top) / rect.height;
       socketRef.current?.emit("mouse-event", {
@@ -411,9 +436,9 @@ export default function DashboardPage() {
   );
 
   const handleCanvasClick = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (!sessionActive || !selectedDevice || !canvasRef.current) return;
-      const rect = canvasRef.current.getBoundingClientRect();
+    (e: React.MouseEvent<HTMLVideoElement>) => {
+      if (!sessionActive || !selectedDevice || !remoteVideoRef.current) return;
+      const rect = remoteVideoRef.current.getBoundingClientRect();
       const x = (e.clientX - rect.left) / rect.width;
       const y = (e.clientY - rect.top) / rect.height;
       socketRef.current?.emit("mouse-event", {
@@ -426,7 +451,7 @@ export default function DashboardPage() {
   );
 
   const handleCanvasKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLCanvasElement>) => {
+    (e: React.KeyboardEvent<HTMLVideoElement>) => {
       if (!sessionActive || !selectedDevice) return;
       e.preventDefault();
       socketRef.current?.emit("keyboard-event", {
@@ -913,10 +938,12 @@ export default function DashboardPage() {
             </div>
           ) : (
             <div className="flex-1 relative overflow-hidden flex items-center justify-center bg-black">
-              <canvas
-                ref={canvasRef}
-                id="remote-canvas"
-                className="max-w-full max-h-full object-contain"
+              <video
+                id="remote-control-viewport"
+                ref={remoteVideoRef}
+                autoPlay
+                playsInline
+                className="max-w-full max-h-full object-contain bg-black rounded-lg"
                 tabIndex={0}
                 onMouseMove={handleCanvasMouseMove}
                 onClick={handleCanvasClick}

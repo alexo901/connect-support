@@ -99,12 +99,12 @@ export function initIO(httpServer: HTTPServer): IOServer {
       }
     );
 
-    // ── STREAMING: client → tech screen frames ────────────────
+    // ── WEBRTC SIGNALING: peer-to-peer stream setup ─────────
     socket.on(
-      "stream-frame",
-      (data: { supportCode: string; frame: string; monitors?: number; activeMonitor?: number }) => {
-        const room = `device-${data.supportCode}`;
-        socket.to(room).emit("stream-frame", data);
+      "webrtc-signaling",
+      (data: { supportCode?: string; sessionId?: string; type?: string; sdp?: string; candidate?: any }) => {
+        const targetRoom = data.sessionId ? `session:${data.sessionId}` : `room:${data.supportCode}`;
+        socket.to(targetRoom).emit("webrtc-signaling", data);
       }
     );
 

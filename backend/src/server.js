@@ -1490,82 +1490,36 @@ io.on("connection", (socket) => {
     }
   );
 
-  // ── Stream Frame ───────────────────────────────────────────────────────────
+  // ── WebRTC Signaling ───────────────────────────────────────────────────────
 
   socket.on(
-    "stream-frame",
+    "webrtc-signaling",
     (data = {}) => {
       try {
-        const meta =
-          socketMeta.get(socket.id);
+        const { sessionId, supportCode } = data;
 
-        const supportCode =
-          data.supportCode;
-
-        if (
-          meta?.role !== "client" ||
-          !supportCode ||
-          meta.deviceCode !== supportCode ||
-          typeof data.frame !== "string" ||
-          !data.frame
-        ) {
-          console.warn("[Backend] Dropping invalid stream frame", {
+        if (!sessionId && !supportCode) {
+          console.warn("[Backend] Dropping invalid WebRTC signaling payload", {
             socketId: socket.id,
-            role: meta?.role,
-            deviceCode: meta?.deviceCode,
-            supportCode,
-            frameBytes: data.frame?.length || 0,
+            data,
           });
           return;
         }
 
-        console.log("[Backend] Frame received", {
+        const targetRoom = sessionId
+          ? `session:${sessionId}`
+          : `room:${supportCode}`;
+
+        socket.to(targetRoom).emit("webrtc-signaling", data);
+        console.log("[Backend] WebRTC signaling forwarded", {
+          socketId: socket.id,
+          targetRoom,
+          type: data.type,
+          sessionId,
           supportCode,
-          sessionId: data.sessionId,
-          frameBytes: data.frame.length,
-        });
-
-        const room =
-          `device-${supportCode}`;
-
-        const roomSockets =
-          io.sockets.adapter.rooms.get(
-            room
-          ) || new Set();
-
-        const technicianSockets =
-          [...roomSockets].filter(
-            (socketId) => {
-              const targetMeta =
-                socketMeta.get(socketId);
-
-              return (
-                targetMeta?.role === "tech"
-              );
-            }
-          );
-
-        if (!technicianSockets.length) {
-          console.warn("[Backend] No technician socket in room for frame", {
-            room,
-            sessionId: data.sessionId,
-          });
-          return;
-        }
-
-        for (const technicianSocketId of technicianSockets) {
-          io.sockets.sockets.get(technicianSocketId)?.emit("stream-frame", data);
-        }
-        console.log("[Backend] Frame forwarded", {
-          room,
-          targets: technicianSockets.length,
-          sessionId: data.sessionId,
         });
       } catch (err) {
-        console.error(
-          "[stream-frame]",
-          err
-        );
+        console.error("[webrtc-signaling]", err);
       }
     }
   );

@@ -61,7 +61,8 @@ export default function Dashboard() {
   const [notification, setNotification]   = useState(null);
   const [newClientPopup, setNewClientPopup] = useState(null);
 
-  const canvasRef     = useRef(null);
+  const remoteVideoRef = useRef(null);
+  const peerConnectionRef = useRef(null);
   const socketRef     = useRef(null);
   const frameCountRef = useRef(0);
   const fileInputRef  = useRef(null);
@@ -103,34 +104,41 @@ export default function Dashboard() {
     socket.on("connection-approved", () => { notify("Client approved!","success"); setPendingConnectId(null); setSessionActive(true); });
     socket.on("connection-rejected", () => { notify("Client declined the request","error"); setPendingConnectId(null); });
 
-    socket.on("stream-frame", (data) => {
-      console.log("[Dashboard] Frame received", {
-        supportCode: data?.supportCode,
-        sessionId: data?.sessionId,
-        bytes: data?.frame?.length || 0,
-      });
-      if (!data?.frame || !/^[A-Za-z0-9+/]+={0,2}$/.test(data.frame)) {
-        console.warn("[Dashboard] Invalid frame payload");
-        return;
-      }
-      if (!canvasRef.current) {
-        console.warn("[Dashboard] Frame received before canvas mounted");
-        return;
-      }
-      frameCountRef.current++;
-      if (data.monitors) setMonitors(data.monitors);
-      const img = new window.Image();
-      img.onload = () => {
-        const ctx = canvasRef.current?.getContext("2d");
-        if (!ctx) return;
-        if (canvasRef.current.width !== img.width || canvasRef.current.height !== img.height) {
-          canvasRef.current.width = img.width;
-          canvasRef.current.height = img.height;
+    socket.on("webrtc-signaling", async (data) => {
+      if (!socketRef.current) return;
+      const peerConnection = peerConnectionRef.current || (() => {
+        const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+        pc.ontrack = (event) => {
+          const [stream] = event.streams;
+          if (remoteVideoRef.current && stream) remoteVideoRef.current.srcObject = stream;
+        };
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            socketRef.current.emit("webrtc-signaling", {
+              supportCode: data.supportCode,
+              type: "candidate",
+              candidate: event.candidate.toJSON(),
+            });
+          }
+        };
+        peerConnectionRef.current = pc;
+        return pc;
+      })();
+
+      try {
+        if (data.type === "offer") {
+          await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp: data.sdp }));
+          const answer = await peerConnection.createAnswer();
+          await peerConnection.setLocalDescription(answer);
+          socketRef.current.emit("webrtc-signaling", { supportCode: data.supportCode, type: "answer", sdp: answer.sdp });
+        } else if (data.type === "answer") {
+          await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: data.sdp }));
+        } else if (data.type === "candidate" && data.candidate) {
+          await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
         }
-        ctx.drawImage(img, 0, 0);
-      };
-      img.onerror = () => console.error("[Dashboard] JPEG frame could not be decoded");
-      img.src = `data:image/jpeg;base64,${data.frame}`;
+      } catch (err) {
+        console.error("[Dashboard] WebRTC signaling failed:", err);
+      }
     });
 
     socket.on("chat-message", (msg) => setChatMessages(prev => [...prev, msg]));
