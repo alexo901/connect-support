@@ -23,7 +23,7 @@ export function initIO(httpServer: HTTPServer): IOServer {
   // socketId → { role: 'client'|'tech', deviceId, sessionId? }
   const socketMeta = new Map<
     string,
-    { role: "client" | "tech"; deviceId?: string; sessionId?: string }
+    { role: "client" | "tech"; deviceId?: string; deviceCode?: string; sessionId?: string }
   >();
 
   io.on("connection", (socket) => {

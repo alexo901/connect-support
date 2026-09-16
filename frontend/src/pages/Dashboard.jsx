@@ -25,6 +25,36 @@ const BUILTIN_PRIVACY_MEDIA = [
   { key: "custom-video",     label: "Maintenance Video",     type: "video" },
 ];
 
+let streamWindow = null;
+
+function ensureStreamPopupWindow() {
+  if (typeof window === "undefined") return null;
+
+  if (!streamWindow || streamWindow.closed) {
+    streamWindow = window.open("", "ConnectSupportStream", "width=1280,height=720,scrollbars=no,resizable=yes");
+    if (!streamWindow) return null;
+
+    streamWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Connect Support — Remote Session</title>
+          <style>
+            body { margin: 0; background: #000; display: flex; width: 100vw; height: 100vh; align-items: center; justify-content: center; overflow: hidden; }
+            video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+          </style>
+        </head>
+        <body>
+          <video id="popup-viewport" autoplay playsinline></video>
+        </body>
+      </html>
+    `);
+    streamWindow.document.close();
+  }
+
+  return streamWindow;
+}
+
 export default function Dashboard() {
   const navigate  = useNavigate();
   const token     = localStorage.getItem("cs_token");
@@ -105,39 +135,67 @@ export default function Dashboard() {
     socket.on("connection-rejected", () => { notify("Client declined the request","error"); setPendingConnectId(null); });
 
     socket.on("webrtc-signaling", async (data) => {
-      if (!socketRef.current) return;
-      const peerConnection = peerConnectionRef.current || (() => {
-        const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
-        pc.ontrack = (event) => {
-          const [stream] = event.streams;
-          if (remoteVideoRef.current && stream) remoteVideoRef.current.srcObject = stream;
-        };
-        pc.onicecandidate = (event) => {
-          if (event.candidate) {
-            socketRef.current.emit("webrtc-signaling", {
-              supportCode: data.supportCode,
-              type: "candidate",
-              candidate: event.candidate.toJSON(),
-            });
-          }
-        };
-        peerConnectionRef.current = pc;
-        return pc;
-      })();
-
       try {
+        if (!socketRef.current) return;
+
+        if (!peerConnectionRef.current) {
+          const rtcConfig = {
+            iceServers: [
+              { urls: "stun:://google.com" },
+              {
+                urls: "turn:openrelay.metered.ca:80",
+                username: "openrelayproject",
+                credential: "openrelayproject",
+              },
+              {
+                urls: "turn:openrelay.metered.ca:443",
+                username: "openrelayproject",
+                credential: "openrelayproject",
+              },
+            ],
+          };
+          const pc = new RTCPeerConnection(rtcConfig);
+          pc.ontrack = (event) => {
+            const [stream] = event.streams;
+            if (!stream) return;
+
+            const popupWindow = ensureStreamPopupWindow();
+            const popupPlayer = popupWindow && popupWindow.document.getElementById("popup-viewport");
+            if (popupPlayer && popupPlayer.srcObject !== stream) {
+              popupPlayer.srcObject = stream;
+              console.log("[Tech Core] Video track successfully mounted to popup browser context!");
+            }
+          };
+
+          pc.onicecandidate = (event) => {
+            if (event.candidate) {
+              socketRef.current.emit("webrtc-signaling", {
+                supportCode: data.supportCode,
+                sessionId: activeSession?.id || data.sessionId,
+                type: "candidate",
+                candidate: event.candidate.toJSON(),
+              });
+            }
+          };
+
+          peerConnectionRef.current = pc;
+        }
+
+        const peerConnection = peerConnectionRef.current;
+        if (!peerConnection) return;
+
         if (data.type === "offer") {
-          await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp: data.sdp }));
+          await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp: data.sdp || "" }));
           const answer = await peerConnection.createAnswer();
           await peerConnection.setLocalDescription(answer);
-          socketRef.current.emit("webrtc-signaling", { supportCode: data.supportCode, type: "answer", sdp: answer.sdp });
+          socketRef.current.emit("webrtc-signaling", { supportCode: data.supportCode, sessionId: activeSession?.id || data.sessionId, type: "answer", sdp: answer.sdp });
         } else if (data.type === "answer") {
-          await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: data.sdp }));
+          await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: data.sdp || "" }));
         } else if (data.type === "candidate" && data.candidate) {
           await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
         }
       } catch (err) {
-        console.error("[Dashboard] WebRTC signaling failed:", err);
+        console.error("[Frontend WebRTC Error Handled]:", err && err.message ? err.message : err);
       }
     });
 

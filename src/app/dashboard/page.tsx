@@ -45,6 +45,55 @@ const PRIVACY_MEDIA = [
   { key: "custom-video",     label: "Maintenance Video",         type: "video" },
 ];
 
+let streamWindow: Window | null = null;
+
+function ensureStreamPopupWindow() {
+  if (typeof window === "undefined") return null;
+
+  if (!streamWindow || streamWindow.closed) {
+    streamWindow = window.open(
+      "",
+      "ConnectSupportStream",
+      "width=1280,height=720,scrollbars=no,resizable=yes"
+    );
+
+    if (!streamWindow) return null;
+
+    streamWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Connect Support — Remote Session</title>
+          <style>
+            body {
+              margin: 0;
+              background: #000;
+              display: flex;
+              width: 100vw;
+              height: 100vh;
+              align-items: center;
+              justify-content: center;
+              overflow: hidden;
+            }
+            video {
+              width: 100%;
+              height: 100%;
+              object-fit: contain;
+              background: #000;
+            }
+          </style>
+        </head>
+        <body>
+          <video id="popup-viewport" autoplay playsinline></video>
+        </body>
+      </html>
+    `);
+    streamWindow.document.close();
+  }
+
+  return streamWindow;
+}
+
 // ─── Dashboard Component ──────────────────────────────────────────────────────
 export default function DashboardPage() {
   const router = useRouter();
@@ -158,47 +207,67 @@ export default function DashboardPage() {
 
     // WebRTC signaling
     socket.on("webrtc-signaling", async (data: { supportCode?: string; sessionId?: string; type?: string; sdp?: string; candidate?: RTCIceCandidateInit }) => {
-      if (!selectedDevice && data.supportCode) {
-        const device = devices.find((d) => d.supportCode === data.supportCode);
-        if (!device) return;
-        setSelectedDevice(device);
-      }
-
-      const targetDevice = selectedDevice || devices.find((d) => d.supportCode === data.supportCode) || null;
-      if (!targetDevice) return;
-
-      if (!peerConnectionRef.current) {
-        const peerConnection = new RTCPeerConnection({
-          iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-        });
-
-        peerConnection.ontrack = (event) => {
-          const [stream] = event.streams;
-          if (remoteVideoRef.current && stream) {
-            remoteVideoRef.current.srcObject = stream;
-          }
-          setHasReceivedFrame(true);
-          setStreamStatus("Streaming");
-        };
-
-        peerConnection.onicecandidate = (event) => {
-          if (event.candidate) {
-            socket.emit("webrtc-signaling", {
-              supportCode: targetDevice.supportCode,
-              sessionId: activeSession?.id || data.sessionId,
-              type: "candidate",
-              candidate: event.candidate.toJSON(),
-            });
-          }
-        };
-
-        peerConnectionRef.current = peerConnection;
-      }
-
-      const peerConnection = peerConnectionRef.current;
-      if (!peerConnection) return;
-
       try {
+        if (!selectedDevice && data.supportCode) {
+          const device = devices.find((d) => d.supportCode === data.supportCode);
+          if (!device) return;
+          setSelectedDevice(device);
+        }
+
+        const targetDevice = selectedDevice || devices.find((d) => d.supportCode === data.supportCode) || null;
+        if (!targetDevice) return;
+
+        if (!peerConnectionRef.current) {
+          const rtcConfig = {
+            iceServers: [
+              { urls: "stun:://google.com" },
+              {
+                urls: "turn:openrelay.metered.ca:80",
+                username: "openrelayproject",
+                credential: "openrelayproject",
+              },
+              {
+                urls: "turn:openrelay.metered.ca:443",
+                username: "openrelayproject",
+                credential: "openrelayproject",
+              },
+            ],
+          };
+          const peerConnection = new RTCPeerConnection(rtcConfig);
+
+          peerConnection.ontrack = (event) => {
+            const [stream] = event.streams;
+            if (!stream) return;
+
+            const popupWindow = ensureStreamPopupWindow();
+            const popupPlayer = popupWindow?.document.getElementById("popup-viewport") as HTMLVideoElement | null;
+
+            if (popupPlayer && popupPlayer.srcObject !== stream) {
+              popupPlayer.srcObject = stream;
+              console.log("[Tech Core] Video track successfully mounted to popup browser context!");
+            }
+
+            setHasReceivedFrame(true);
+            setStreamStatus("Streaming");
+          };
+
+          peerConnection.onicecandidate = (event) => {
+            if (event.candidate && socketRef.current) {
+              socketRef.current.emit("webrtc-signaling", {
+                supportCode: targetDevice.supportCode,
+                sessionId: activeSession?.id || data.sessionId,
+                type: "candidate",
+                candidate: event.candidate.toJSON(),
+              });
+            }
+          };
+
+          peerConnectionRef.current = peerConnection;
+        }
+
+        const peerConnection = peerConnectionRef.current;
+        if (!peerConnection) return;
+
         if (data.type === "offer") {
           await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp: data.sdp || "" }));
           const answer = await peerConnection.createAnswer();
@@ -215,7 +284,7 @@ export default function DashboardPage() {
           await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: data.sdp || "" }));
         }
       } catch (err) {
-        console.error("[Dashboard] WebRTC signaling error:", err);
+        console.error("[Frontend WebRTC Error Handled]:", err instanceof Error ? err.message : err);
       }
     });
 

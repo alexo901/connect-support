@@ -462,6 +462,22 @@ const error = document.getElementById("error");
 let localPeerConnection = null;
 let localScreenStream = null;
 
+const rtcConfig = {
+  iceServers: [
+    { urls: "stun:://google.com" },
+    {
+      urls: "turn:openrelay.metered.ca:80",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
+    {
+      urls: "turn:openrelay.metered.ca:443",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
+  ],
+};
+
 async function startWebRtcStream(data) {
   if (!data || !data.sourceId) return;
 
@@ -492,9 +508,7 @@ async function startWebRtcStream(data) {
       },
     });
 
-    const peerConnection = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-    });
+    const peerConnection = new RTCPeerConnection(rtcConfig);
 
     localPeerConnection = peerConnection;
 
@@ -729,7 +743,6 @@ function endSession() {
   sessionActive = false;
   activeSessionId = null;
 
-  stopScreenStream();
   closeAllPrivacyWindows();
   setInputLock(false);
 
@@ -1033,21 +1046,12 @@ Decline
   });
 }
 
-function stopScreenStream() {
-  if (streamInterval) {
-    clearInterval(streamInterval);
-    streamInterval = null;
-  }
-}
-
 function startApprovedSession() {
   console.log("[Agent] Starting approved session");
 
   sessionActive = true;
 
   updateTrayMenu();
-
-  if (!streamInterval) startScreenStream();
 }
 
 // ── Remote control ────────────────────────────────────────────────────────────
@@ -1227,10 +1231,6 @@ function connectSocket() {
           console.log("[Agent] register-client heartbeat emitted", CONFIG.supportCode);
         }
       }, 30000); // every 5 minutes
-    if (sessionActive && activeSessionId) {
-      console.log("[Agent] Reconnected during active session; resuming stream");
-      startScreenStream();
-    }
   });
 
   socket.on("disconnect", (reason) => {
@@ -1248,7 +1248,6 @@ function connectSocket() {
 
     // Keep the approved session state during a transient network reconnect.
     // The server will end it only on an explicit technician end-session event.
-    stopScreenStream();
 
     updateTrayMenu();
   });
@@ -1579,8 +1578,6 @@ app.on("activate", () => {
 
 app.on("before-quit", () => {
   globalShortcut.unregisterAll();
-
-  stopScreenStream();
 
   closeAllPrivacyWindows();
 
