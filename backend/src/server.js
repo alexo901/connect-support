@@ -1203,6 +1203,36 @@ app.get(
   }
 );
 
+app.get(
+  "/api/downloads/:fileName",
+  async (req, res) => {
+    const fileName = decodeURIComponent(req.params.fileName || "");
+    if (!DOWNLOADABLE_INSTALLER_FILES.has(fileName)) {
+      return res.status(404).json({ error: "Installer file not found" });
+    }
+
+    await streamInstallerFile(fileName, req, res, {
+      attachment: false,
+      noStore: false,
+    });
+  }
+);
+
+app.get(
+  "/api/app-downloads/:fileName",
+  async (req, res) => {
+    const fileName = decodeURIComponent(req.params.fileName || "");
+    if (!DOWNLOADABLE_INSTALLER_FILES.has(fileName)) {
+      return res.status(404).json({ error: "Installer file not found" });
+    }
+
+    await streamInstallerFile(fileName, req, res, {
+      attachment: false,
+      noStore: false,
+    });
+  }
+);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SOCKET.IO SIGNALING
 // ─────────────────────────────────────────────────────────────────────────────

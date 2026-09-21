@@ -58,7 +58,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "appPackageUrl": "https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net/api/downloads"
+      "appPackageUrl": "https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net/downloads"
     },
     "publish": [
       {
