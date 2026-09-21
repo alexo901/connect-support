@@ -97,6 +97,24 @@ export default function Dashboard() {
   const frameCountRef = useRef(0);
   const fileInputRef  = useRef(null);
   const mediaInputRef = useRef(null);
+  let techPeerConn = null;
+  let streamWindow = null;
+
+  const rtcConfig = {
+    iceServers: [
+      { urls: "stun:://google.com" },
+      {
+        urls: "turn:openrelay.metered.ca:80",
+        username: "openrelayproject",
+        credential: "openrelayproject",
+      },
+      {
+        urls: "turn:openrelay.metered.ca:443",
+        username: "openrelayproject",
+        credential: "openrelayproject",
+      },
+    ],
+  };
 
   // Auth guard
   useEffect(() => { if (!token) navigate("/login"); }, [token]);
@@ -136,66 +154,80 @@ export default function Dashboard() {
 
     socket.on("webrtc-signaling", async (data) => {
       try {
-        if (!socketRef.current) return;
+        if (!streamWindow || streamWindow.closed) {
+          console.log("[Dashboard] Initializing clean native browser stream viewport popup window...");
+          streamWindow = window.open("", "ConnectSupportStream", "width=1280,height=720,scrollbars=no,resizable=yes");
 
-        if (!peerConnectionRef.current) {
-          const rtcConfig = {
-            iceServers: [
-              { urls: "stun:://google.com" },
-              {
-                urls: "turn:openrelay.metered.ca:80",
-                username: "openrelayproject",
-                credential: "openrelayproject",
-              },
-              {
-                urls: "turn:openrelay.metered.ca:443",
-                username: "openrelayproject",
-                credential: "openrelayproject",
-              },
-            ],
-          };
-          const pc = new RTCPeerConnection(rtcConfig);
-          pc.ontrack = (event) => {
-            const [stream] = event.streams;
-            if (!stream) return;
+          if (streamWindow) {
+            const htmlContent =
+              '<!DOCTYPE html>' +
+              '<html>' +
+              '<head>' +
+              '<title>Connect Support — Remote Session</title>' +
+              '<style>' +
+              'body { margin: 0; background: #000; display: flex; width: 100vw; height: 100vh; align-items: center; justify-content: center; overflow: hidden; }' +
+              'video { width: 100%; height: 100%; object-fit: contain; background: #000; }' +
+              '</style>' +
+              '</head>' +
+              '<body>' +
+              '<video id="popup-viewport" autoplay playsinline></video>' +
+              '</body>' +
+              '</html>';
 
-            const popupWindow = ensureStreamPopupWindow();
-            const popupPlayer = popupWindow && popupWindow.document.getElementById("popup-viewport");
-            if (popupPlayer && popupPlayer.srcObject !== stream) {
-              popupPlayer.srcObject = stream;
-              console.log("[Tech Core] Video track successfully mounted to popup browser context!");
-            }
-          };
+            streamWindow.document.open();
+            streamWindow.document.write(htmlContent);
+            streamWindow.document.close();
+          } else {
+            console.error("Popup blocker intercepted the viewport expansion pipeline.");
+            return;
+          }
+        }
 
-          pc.onicecandidate = (event) => {
+        if (!techPeerConn) {
+          console.log("[WebRTC Core] Constructing direct peer connection pipeline map...");
+          techPeerConn = new RTCPeerConnection(rtcConfig);
+
+          techPeerConn.onicecandidate = (event) => {
             if (event.candidate) {
-              socketRef.current.emit("webrtc-signaling", {
-                supportCode: data.supportCode,
-                sessionId: activeSession?.id || data.sessionId,
+              socket.emit("webrtc-signaling", {
                 type: "candidate",
-                candidate: event.candidate.toJSON(),
+                candidate: event.candidate,
+                sessionId: activeSession?.id || data.sessionId,
               });
             }
           };
 
-          peerConnectionRef.current = pc;
+          techPeerConn.ontrack = (event) => {
+            if (streamWindow && !streamWindow.closed) {
+              const popupPlayer = streamWindow.document.getElementById("popup-viewport");
+              if (popupPlayer && popupPlayer.srcObject !== event.streams[0]) {
+                popupPlayer.srcObject = event.streams[0];
+                console.log("[WebRTC Core] Video tracks mounted safely inside the popup browser window context.");
+              }
+            }
+          };
         }
 
-        const peerConnection = peerConnectionRef.current;
-        if (!peerConnection) return;
+        if (data.type === "offer" && data.sdp) {
+          const remoteDescription = {
+            type: "offer",
+            sdp: data.sdp,
+          };
 
-        if (data.type === "offer") {
-          await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp: data.sdp || "" }));
-          const answer = await peerConnection.createAnswer();
-          await peerConnection.setLocalDescription(answer);
-          socketRef.current.emit("webrtc-signaling", { supportCode: data.supportCode, sessionId: activeSession?.id || data.sessionId, type: "answer", sdp: answer.sdp });
-        } else if (data.type === "answer") {
-          await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: data.sdp || "" }));
+          await techPeerConn.setRemoteDescription(remoteDescription);
+          const handshakeAnswer = await techPeerConn.createAnswer();
+          await techPeerConn.setLocalDescription(handshakeAnswer);
+
+          socket.emit("webrtc-signaling", {
+            type: "answer",
+            sdp: handshakeAnswer,
+            sessionId: data.sessionId,
+          });
         } else if (data.type === "candidate" && data.candidate) {
-          await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+          await techPeerConn.addIceCandidate(new RTCIceCandidate(data.candidate));
         }
       } catch (err) {
-        console.error("[Frontend WebRTC Error Handled]:", err && err.message ? err.message : err);
+        console.error("[WebRTC Shield Exception Handled]:", err && err.message ? err.message : err);
       }
     });
 

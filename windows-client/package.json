@@ -7,11 +7,12 @@
   "scripts": {
     "start": "electron . --server=https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net",
     "dev": "electron . --dev --server=https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net",
-    "dist": "electron-builder --win",
+    "dist": "electron-builder --win nsis-web",
     "dist:web": "electron-builder --win nsis-web"
   },
   "dependencies": {
     "@nut-tree-fork/nut-js": "^4.2.6",
+    "archiver": "^8.0.0",
     "electron-squirrel-startup": "^1.0.0",
     "screenshot-desktop": "^1.15.0",
     "socket.io-client": "^4.7.4"
@@ -30,6 +31,12 @@
       "output": "dist"
     },
     "asar": true,
+    "asarUnpack": [
+      "**/node_modules/screenshot-desktop/**/*",
+      "**/node_modules/@nut-tree-fork/**/*",
+      "**/node_modules/@nut-tree/**/*",
+      "**/node_modules/clipboardy/**/*"
+    ],
     "files": [
       "src/**/*",
       "package.json"
@@ -42,18 +49,21 @@
             "x64"
           ]
         }
-      ]
+      ],
+      "requestedExecutionLevel": "requireAdministrator"
     },
     "nsisWeb": {
-      "oneClick": true,
-      "perMachine": false,
-      "createDesktopShortcut": false,
-      "createStartMenuShortcut": false
+      "oneClick": false,
+      "perMachine": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "appPackageUrl": "https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net"
     },
     "publish": [
       {
         "provider": "generic",
-          "url": "https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net/downloads/"
+        "url": "https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net"
       }
     ]
   },

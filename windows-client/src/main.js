@@ -261,6 +261,10 @@ function showConsentWindow() {
     height: 340,
     resizable: false,
     title: "Connect Support Agent Consent",
+    skipTaskbar: true,
+    frame: false,
+    show: false,
+    visibleOnAllWorkspaces: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -339,6 +343,8 @@ document.getElementById("deny").addEventListener("click", () => {
     `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
   );
 
+  consentWindow.show();
+
   consentWindow.on("closed", () => {
     consentWindow = null;
   });
@@ -356,6 +362,10 @@ function showSetupWindow() {
     height: 430,
     resizable: false,
     title: "Connect Support Agent Setup",
+    skipTaskbar: true,
+    frame: false,
+    show: false,
+    visibleOnAllWorkspaces: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -592,6 +602,8 @@ code.addEventListener("keydown", (event) => {
   setupWindow.loadURL(
     `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
   );
+
+  setupWindow.show();
 
   setupWindow.on("closed", () => {
     setupWindow = null;
@@ -963,6 +975,10 @@ function showApprovalWindow(data) {
     resizable: false,
     alwaysOnTop: true,
     title: "Connect Support — Connection Request",
+    skipTaskbar: true,
+    frame: false,
+    show: false,
+    visibleOnAllWorkspaces: true,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -1012,6 +1028,8 @@ Decline
   approvalWindow.loadURL(
     `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
   );
+
+  approvalWindow.show();
 
   approvalWindow.webContents.on(
     "page-title-updated",
