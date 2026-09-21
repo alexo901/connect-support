@@ -58,12 +58,12 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "appPackageUrl": "https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net/downloads"
+      "appPackageUrl": "https://connectsupportfiles123.blob.core.windows.net/installers/connect-support-agent-1.0.3-x64.nsis.7z"
     },
     "publish": [
       {
         "provider": "generic",
-        "url": "https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net/downloads"
+        "url": "https://connectsupportfiles123.blob.core.windows.net/installers/"
       }
     ]
   },
