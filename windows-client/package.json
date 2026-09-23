@@ -8,9 +8,7 @@
     "start": "electron . --server=https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net",
     "dev": "electron . --dev --server=https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net",
     "dist": "electron-builder --win nsis-web",
-    "dist:web": "electron-builder --win nsis-web",
-    "postinstall": "node -e \"const { spawnSync } = require('child_process'); if (process.platform === 'win32') { const result = spawnSync(process.execPath, ['--install-service'], { stdio: 'inherit', shell: false }); if (result.status) process.exit(result.status); }\"",
-    "preuninstall": "node -e \"const { spawnSync } = require('child_process'); if (process.platform === 'win32') { const result = spawnSync(process.execPath, ['--uninstall-service'], { stdio: 'inherit', shell: false }); if (result.status) process.exit(result.status); }\""
+    "dist:web": "electron-builder --win nsis-web"
   },
   "dependencies": {
     "@nut-tree-fork/nut-js": "^4.2.6",
@@ -60,6 +58,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": false,
       "createStartMenuShortcut": false,
+      "include": "build/installer.nsh",
       "appPackageUrl": "https://connectsupportfiles123.blob.core.windows.net/installers/connect-support-agent-1.0.3-x64.nsis.7z"
     },
     "publish": [

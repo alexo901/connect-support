@@ -36,6 +36,13 @@ const isInstallService = process.argv.includes("--install-service");
 const isUninstallService = process.argv.includes("--uninstall-service");
 const isServiceMode = process.argv.includes("--service");
 
+if (isServiceMode) {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-software-rasterizer");
+  app.commandLine.appendSwitch("no-sandbox");
+}
+
 function getActiveInteractiveSessionId() {
   if (process.platform !== "win32") {
     return null;
@@ -96,134 +103,119 @@ function startInteractiveAgentInUserSession() {
 
   const exePath = process.execPath;
   const cmdLine = `"${exePath}" --hidden --session-id=${sessionId}`;
-  const script = `
-    Add-Type -TypeDefinition @'
-      using System;
-      using System.Runtime.InteropServices;
-
-      public static class WinSessionApi {
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        public struct STARTUPINFO {
-          public int cb;
-          public string lpReserved;
-          public string lpDesktop;
-          public string lpTitle;
-          public int dwX;
-          public int dwY;
-          public int dwXSize;
-          public int dwYSize;
-          public int dwXCountChars;
-          public int dwYCountChars;
-          public int dwFillAttribute;
-          public int dwFlags;
-          public short wShowWindow;
-          public short cbReserved2;
-          public IntPtr lpReserved2;
-          public IntPtr hStdInput;
-          public IntPtr hStdOutput;
-          public IntPtr hStdError;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        public struct PROCESS_INFORMATION {
-          public IntPtr hProcess;
-          public IntPtr hThread;
-          public int dwProcessId;
-          public int dwThreadId;
-        }
-
-        [DllImport("wtsapi32.dll", SetLastError = true)]
-        public static extern bool WTSQueryUserToken(uint SessionId, out IntPtr phToken);
-
-        [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-        public static extern bool DuplicateTokenEx(
-          IntPtr hExistingToken,
-          uint dwDesiredAccess,
-          IntPtr lpTokenAttributes,
-          int ImpersonationLevel,
-          int TokenType,
-          out IntPtr phNewToken);
-
-        [DllImport("userenv.dll", SetLastError = true)]
-        public static extern bool CreateEnvironmentBlock(out IntPtr lpEnvironment, IntPtr hToken, bool bInherit);
-
-        [DllImport("userenv.dll", SetLastError = true)]
-        public static extern bool DestroyEnvironmentBlock(IntPtr lpEnvironment);
-
-        [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-        public static extern bool CreateProcessAsUserW(
-          IntPtr hToken,
-          string lpApplicationName,
-          string lpCommandLine,
-          IntPtr lpProcessAttributes,
-          IntPtr lpThreadAttributes,
-          bool bInheritHandles,
-          uint dwCreationFlags,
-          IntPtr lpEnvironment,
-          string lpCurrentDirectory,
-          ref STARTUPINFO lpStartupInfo,
-          out PROCESS_INFORMATION lpProcessInformation);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        public static extern bool CloseHandle(IntPtr hObject);
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        public static extern int GetLastError();
-      }
-    '@
-
-    $sessionId = ${sessionId};
-    $token = [IntPtr]::Zero;
-    $duplicateToken = [IntPtr]::Zero;
-    $environment = [IntPtr]::Zero;
-    $startupInfo = New-Object WinSessionApi+STARTUPINFO;
-    $startupInfo.cb = [System.Runtime.InteropServices.Marshal]::SizeOf($startupInfo);
-    $startupInfo.dwFlags = 0x00000001;
-    $startupInfo.wShowWindow = 0;
-    $processInfo = New-Object WinSessionApi+PROCESS_INFORMATION;
-
-    $userTokenOk = [WinSessionApi]::WTSQueryUserToken([uint32]$sessionId, [ref]$token);
-    if (-not $userTokenOk) {
-      throw "WTSQueryUserToken failed for session $sessionId";
-    }
-
-    $duplicateOk = [WinSessionApi]::DuplicateTokenEx($token, 0x000F0000, [IntPtr]::Zero, 2, 1, [ref]$duplicateToken);
-    if (-not $duplicateOk) {
-      throw "DuplicateTokenEx failed";
-    }
-
-    $envOk = [WinSessionApi]::CreateEnvironmentBlock([ref]$environment, $duplicateToken, $false);
-    if (-not $envOk) {
-      throw "CreateEnvironmentBlock failed";
-    }
-
-    $cmdLine = '${cmdLine.replace("'","''")}';
-    $processCreated = [WinSessionApi]::CreateProcessAsUserW(
-      $duplicateToken,
-      $null,
-      $cmdLine,
-      [IntPtr]::Zero,
-      [IntPtr]::Zero,
-      $false,
-      0x00000010,
-      $environment,
-      $null,
-      [ref]$startupInfo,
-      [ref]$processInfo
-    );
-
-    if (-not $processCreated) {
-      throw "CreateProcessAsUserW failed for session $sessionId";
-    }
-
-    if ($environment -ne [IntPtr]::Zero) { [void][WinSessionApi]::DestroyEnvironmentBlock($environment); }
-    if ($duplicateToken -ne [IntPtr]::Zero) { [void][WinSessionApi]::CloseHandle($duplicateToken); }
-    if ($token -ne [IntPtr]::Zero) { [void][WinSessionApi]::CloseHandle($token); }
-    if ($processInfo.hProcess -ne [IntPtr]::Zero) { [void][WinSessionApi]::CloseHandle($processInfo.hProcess); }
-    if ($processInfo.hThread -ne [IntPtr]::Zero) { [void][WinSessionApi]::CloseHandle($processInfo.hThread); }
-
-    Write-Output $processInfo.dwProcessId
-  `;
+  const safeCmdLine = cmdLine.replace(/'/g, "''");
+  const script = [
+    "Add-Type -TypeDefinition @'",
+    "using System;",
+    "using System.Runtime.InteropServices;",
+    "",
+    "public static class WinSessionApi {",
+    "  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]",
+    "  public struct STARTUPINFO {",
+    "    public int cb;",
+    "    public string lpReserved;",
+    "    public string lpDesktop;",
+    "    public string lpTitle;",
+    "    public int dwX;",
+    "    public int dwY;",
+    "    public int dwXSize;",
+    "    public int dwYSize;",
+    "    public int dwXCountChars;",
+    "    public int dwYCountChars;",
+    "    public int dwFillAttribute;",
+    "    public int dwFlags;",
+    "    public short wShowWindow;",
+    "    public short cbReserved2;",
+    "    public IntPtr lpReserved2;",
+    "    public IntPtr hStdInput;",
+    "    public IntPtr hStdOutput;",
+    "    public IntPtr hStdError;",
+    "  }",
+    "",
+    "  [StructLayout(LayoutKind.Sequential)]",
+    "  public struct PROCESS_INFORMATION {",
+    "    public IntPtr hProcess;",
+    "    public IntPtr hThread;",
+    "    public int dwProcessId;",
+    "    public int dwThreadId;",
+    "  }",
+    "",
+    "  [DllImport(\"wtsapi32.dll\", SetLastError = true)]",
+    "  public static extern bool WTSQueryUserToken(uint SessionId, out IntPtr phToken);",
+    "",
+    "  [DllImport(\"advapi32.dll\", SetLastError = true, CharSet = CharSet.Unicode)]",
+    "  public static extern bool DuplicateTokenEx(",
+    "    IntPtr hExistingToken,",
+    "    uint dwDesiredAccess,",
+    "    IntPtr lpTokenAttributes,",
+    "    int ImpersonationLevel,",
+    "    int TokenType,",
+    "    out IntPtr phNewToken);",
+    "",
+    "  [DllImport(\"userenv.dll\", SetLastError = true)]",
+    "  public static extern bool CreateEnvironmentBlock(out IntPtr lpEnvironment, IntPtr hToken, bool bInherit);",
+    "",
+    "  [DllImport(\"userenv.dll\", SetLastError = true)]",
+    "  public static extern bool DestroyEnvironmentBlock(IntPtr lpEnvironment);",
+    "",
+    "  [DllImport(\"advapi32.dll\", SetLastError = true, CharSet = CharSet.Unicode)]",
+    "  public static extern bool CreateProcessAsUserW(",
+    "    IntPtr hToken,",
+    "    string lpApplicationName,",
+    "    string lpCommandLine,",
+    "    IntPtr lpProcessAttributes,",
+    "    IntPtr lpThreadAttributes,",
+    "    bool bInheritHandles,",
+    "    uint dwCreationFlags,",
+    "    IntPtr lpEnvironment,",
+    "    string lpCurrentDirectory,",
+    "    ref STARTUPINFO lpStartupInfo,",
+    "    out PROCESS_INFORMATION lpProcessInformation);",
+    "",
+    "  [DllImport(\"kernel32.dll\", SetLastError = true)]",
+    "  public static extern bool CloseHandle(IntPtr hObject);",
+    "",
+    "  [DllImport(\"kernel32.dll\", SetLastError = true)]",
+    "  public static extern int GetLastError();",
+    "}",
+    "'@",
+    `$sessionId = ${sessionId};`,
+    "$token = [IntPtr]::Zero;",
+    "$duplicateToken = [IntPtr]::Zero;",
+    "$environment = [IntPtr]::Zero;",
+    "$startupInfo = New-Object WinSessionApi+STARTUPINFO;",
+    "$startupInfo.cb = [System.Runtime.InteropServices.Marshal]::SizeOf($startupInfo);",
+    "$startupInfo.dwFlags = 0x00000001;",
+    "$startupInfo.wShowWindow = 0;",
+    "$processInfo = New-Object WinSessionApi+PROCESS_INFORMATION;",
+    "$userTokenOk = [WinSessionApi]::WTSQueryUserToken([uint32]$sessionId, [ref]$token);",
+    "if (-not $userTokenOk) { throw \"WTSQueryUserToken failed for session $sessionId\"; }",
+    "$duplicateOk = [WinSessionApi]::DuplicateTokenEx($token, 0x000F0000, [IntPtr]::Zero, 2, 1, [ref]$duplicateToken);",
+    "if (-not $duplicateOk) { throw \"DuplicateTokenEx failed\"; }",
+    "$envOk = [WinSessionApi]::CreateEnvironmentBlock([ref]$environment, $duplicateToken, $false);",
+    "if (-not $envOk) { throw \"CreateEnvironmentBlock failed\"; }",
+    `$cmdLine = '${safeCmdLine}';`,
+    "$processCreated = [WinSessionApi]::CreateProcessAsUserW(",
+    "  $duplicateToken,",
+    "  $null,",
+    "  $cmdLine,",
+    "  [IntPtr]::Zero,",
+    "  [IntPtr]::Zero,",
+    "  $false,",
+    "  0x00000010,",
+    "  $environment,",
+    "  $null,",
+    "  [ref]$startupInfo,",
+    "  [ref]$processInfo",
+    ");",
+    "if (-not $processCreated) { throw \"CreateProcessAsUserW failed for session $sessionId\"; }",
+    "if ($environment -ne [IntPtr]::Zero) { [void][WinSessionApi]::DestroyEnvironmentBlock($environment); }",
+    "if ($duplicateToken -ne [IntPtr]::Zero) { [void][WinSessionApi]::CloseHandle($duplicateToken); }",
+    "if ($token -ne [IntPtr]::Zero) { [void][WinSessionApi]::CloseHandle($token); }",
+    "if ($processInfo.hProcess -ne [IntPtr]::Zero) { [void][WinSessionApi]::CloseHandle($processInfo.hProcess); }",
+    "if ($processInfo.hThread -ne [IntPtr]::Zero) { [void][WinSessionApi]::CloseHandle($processInfo.hThread); }",
+    "Write-Output $processInfo.dwProcessId",
+  ].join("\n");
 
   const result = spawnSync("powershell.exe", [
     "-NoProfile",
