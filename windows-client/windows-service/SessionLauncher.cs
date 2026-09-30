@@ -18,27 +18,29 @@ internal static class SessionLauncher
 
     public static uint? GetActiveInteractiveSessionId()
     {
-        var consoleSessionId = Native.WTSGetActiveConsoleSessionId();
-        var activeSessions = new List<uint>();
         IntPtr sessionBuffer = IntPtr.Zero;
+        var activeSessions = new List<uint>();
+
+        if (!Native.WTSEnumerateSessionsW(IntPtr.Zero, 0, 1, out sessionBuffer, out var count))
+        {
+            var error = Marshal.GetLastWin32Error();
+            ServiceFileLog.WriteWin32Failure("WTSEnumerateSessionsW", error, null);
+            return null;
+        }
 
         try
         {
-            if (Native.WTSEnumerateSessionsW(IntPtr.Zero, 0, 1, out sessionBuffer, out var count))
+            var current = sessionBuffer;
+            var size = Marshal.SizeOf<WtsSessionInfo>();
+            for (var index = 0; index < count; index++)
             {
-                var current = sessionBuffer;
-                var size = Marshal.SizeOf<WtsSessionInfo>();
-
-                for (var index = 0; index < count; index++)
+                var session = Marshal.PtrToStructure<WtsSessionInfo>(current);
+                if (session.SessionId != 0 && session.State == WtsConnectState.Active)
                 {
-                    var session = Marshal.PtrToStructure<WtsSessionInfo>(current);
-                    if (session.SessionId != 0 && session.State == WtsConnectState.Active)
-                    {
-                        activeSessions.Add(session.SessionId);
-                    }
-
-                    current = IntPtr.Add(current, size);
+                    activeSessions.Add(session.SessionId);
                 }
+
+                current = IntPtr.Add(current, size);
             }
         }
         finally
@@ -49,24 +51,40 @@ internal static class SessionLauncher
             }
         }
 
-        if (consoleSessionId != uint.MaxValue && activeSessions.Contains(consoleSessionId))
+        if (activeSessions.Count == 0)
         {
-            return consoleSessionId;
+            return null;
         }
 
-        if (activeSessions.Count > 0)
-        {
-            return activeSessions[0];
-        }
+        // Prefer the active physical-console session when it is among the WTSActive
+        // sessions; otherwise use an active RDP session rather than assuming console.
+        var consoleSessionId = Native.WTSGetActiveConsoleSessionId();
+        var selectedSession = activeSessions.Contains(consoleSessionId)
+            ? consoleSessionId
+            : activeSessions[0];
 
-        return null;
+        return selectedSession;
     }
 
     public static Process Launch(string executablePath, uint sessionId)
     {
-        if (!File.Exists(executablePath))
+        var servicePath = Environment.ProcessPath ?? "<unknown>";
+        var fullAgentPath = Path.GetFullPath(executablePath);
+        var agentExists = File.Exists(fullAgentPath);
+
+        ServiceFileLog.Write($"[Session] Active session: {sessionId}");
+        ServiceFileLog.Write($"[Agent] AppContext.BaseDirectory: {AppContext.BaseDirectory}");
+        ServiceFileLog.Write($"[Agent] Service executable path: {servicePath}");
+        ServiceFileLog.Write($"[Agent] Path: {fullAgentPath}");
+        ServiceFileLog.Write($"[Agent] Exists: {agentExists}");
+
+        if (!agentExists)
         {
-            throw new FileNotFoundException("The Connect Support interactive agent was not found.", executablePath);
+            var exception = new FileNotFoundException(
+                $"Connect Support agent executable not found at '{fullAgentPath}'.",
+                fullAgentPath);
+            ServiceFileLog.Write($"[Agent] Launch failed: {exception.Message}");
+            throw exception;
         }
 
         IntPtr userToken = IntPtr.Zero;
@@ -76,13 +94,18 @@ internal static class SessionLauncher
 
         try
         {
+            ServiceFileLog.Write($"[Token] Calling WTSQueryUserToken for session {sessionId}.");
             if (!Native.WTSQueryUserToken(sessionId, out userToken))
             {
-                throw LastWin32Error("WTSQueryUserToken failed");
+                var error = Marshal.GetLastWin32Error();
+                ServiceFileLog.WriteWin32Failure("WTSQueryUserToken", error, sessionId);
+                throw CreateWin32Exception("WTSQueryUserToken", error, sessionId);
             }
+            ServiceFileLog.Write("[Token] WTSQueryUserToken succeeded");
 
             var desiredAccess = TokenAssignPrimary | TokenDuplicate | TokenQuery |
                                 TokenAdjustDefault | TokenAdjustSessionId;
+            ServiceFileLog.Write("[Token] Calling DuplicateTokenEx.");
             if (!Native.DuplicateTokenEx(
                     userToken,
                     desiredAccess,
@@ -91,70 +114,104 @@ internal static class SessionLauncher
                     TokenPrimary,
                     out primaryToken))
             {
-                throw LastWin32Error("DuplicateTokenEx failed");
+                var error = Marshal.GetLastWin32Error();
+                ServiceFileLog.WriteWin32Failure("DuplicateTokenEx", error, sessionId);
+                throw CreateWin32Exception("DuplicateTokenEx", error, sessionId);
             }
+            ServiceFileLog.Write("[Token] DuplicateTokenEx succeeded");
 
+            ServiceFileLog.Write("[Environment] Calling CreateEnvironmentBlock.");
             if (!Native.CreateEnvironmentBlock(out environment, primaryToken, false))
             {
-                throw LastWin32Error("CreateEnvironmentBlock failed");
+                var error = Marshal.GetLastWin32Error();
+                ServiceFileLog.WriteWin32Failure("CreateEnvironmentBlock", error, sessionId);
+                throw CreateWin32Exception("CreateEnvironmentBlock", error, sessionId);
             }
+            ServiceFileLog.Write("[Environment] CreateEnvironmentBlock succeeded");
 
             var startupInfo = new StartupInfo
             {
                 Size = Marshal.SizeOf<StartupInfo>(),
                 Desktop = @"winsta0\default",
             };
-            var commandLine = new StringBuilder($"\"{executablePath}\" --hidden");
+            // lpApplicationName is the exact executable path. The command line has
+            // the quoted argv[0] plus only the existing background-start argument.
+            var commandLine = new StringBuilder($"\"{fullAgentPath}\" --hidden");
+            var workingDirectory = Path.GetDirectoryName(fullAgentPath)
+                ?? throw new InvalidOperationException("Could not resolve the agent working directory.");
 
-            if (!Native.CreateProcessAsUserW(
-                    primaryToken,
-                    executablePath,
-                    commandLine,
-                    IntPtr.Zero,
-                    IntPtr.Zero,
-                    false,
-                    CreateUnicodeEnvironment,
-                    environment,
-                    Path.GetDirectoryName(executablePath),
-                    ref startupInfo,
-                    out processInfo))
+            ServiceFileLog.Write("[Agent] CreateProcessAsUserW parameters:");
+            ServiceFileLog.Write($"[Agent] lpApplicationName: {fullAgentPath}");
+            ServiceFileLog.Write($"[Agent] lpCommandLine: {commandLine}");
+            ServiceFileLog.Write($"[Agent] Desktop: {startupInfo.Desktop}");
+            ServiceFileLog.Write($"[Agent] Working directory: {workingDirectory}");
+            ServiceFileLog.Write($"[Agent] Session ID: {sessionId}");
+            ServiceFileLog.Write($"[Agent] Creation flags: 0x{CreateUnicodeEnvironment:X8}");
+
+            var created = Native.CreateProcessAsUserW(
+                primaryToken,
+                fullAgentPath,
+                commandLine,
+                IntPtr.Zero,
+                IntPtr.Zero,
+                false,
+                CreateUnicodeEnvironment,
+                environment,
+                workingDirectory,
+                ref startupInfo,
+                out processInfo);
+
+            if (!created)
             {
-                throw LastWin32Error("CreateProcessAsUserW failed");
+                // Capture the thread's last-error value immediately after the API returns.
+                var error = Marshal.GetLastWin32Error();
+                ServiceFileLog.WriteWin32Failure("CreateProcessAsUserW", error, sessionId);
+                throw CreateWin32Exception("CreateProcessAsUserW", error, sessionId);
             }
 
+            ServiceFileLog.Write("[Agent] CreateProcessAsUserW succeeded");
+            ServiceFileLog.Write($"[Agent] PID: {processInfo.ProcessId}");
+
+            // Acquire a managed Process handle before closing the native process handle
+            // in finally. This keeps the created process available to the supervisor.
             return Process.GetProcessById(checked((int)processInfo.ProcessId));
         }
         finally
         {
-            if (environment != IntPtr.Zero)
+            if (environment != IntPtr.Zero && !Native.DestroyEnvironmentBlock(environment))
             {
-                Native.DestroyEnvironmentBlock(environment);
+                var error = Marshal.GetLastWin32Error();
+                ServiceFileLog.WriteWin32Failure("DestroyEnvironmentBlock", error, sessionId);
             }
 
-            if (processInfo.Thread != IntPtr.Zero)
+            if (processInfo.Thread != IntPtr.Zero && !Native.CloseHandle(processInfo.Thread))
             {
-                Native.CloseHandle(processInfo.Thread);
+                var error = Marshal.GetLastWin32Error();
+                ServiceFileLog.WriteWin32Failure("CloseHandle(thread)", error, sessionId);
             }
 
-            if (processInfo.Process != IntPtr.Zero)
+            if (processInfo.Process != IntPtr.Zero && !Native.CloseHandle(processInfo.Process))
             {
-                Native.CloseHandle(processInfo.Process);
+                var error = Marshal.GetLastWin32Error();
+                ServiceFileLog.WriteWin32Failure("CloseHandle(process)", error, sessionId);
             }
 
-            if (primaryToken != IntPtr.Zero)
+            if (primaryToken != IntPtr.Zero && !Native.CloseHandle(primaryToken))
             {
-                Native.CloseHandle(primaryToken);
+                var error = Marshal.GetLastWin32Error();
+                ServiceFileLog.WriteWin32Failure("CloseHandle(primary token)", error, sessionId);
             }
 
-            if (userToken != IntPtr.Zero)
+            if (userToken != IntPtr.Zero && !Native.CloseHandle(userToken))
             {
-                Native.CloseHandle(userToken);
+                var error = Marshal.GetLastWin32Error();
+                ServiceFileLog.WriteWin32Failure("CloseHandle(WTS token)", error, sessionId);
             }
         }
     }
 
-    private static Win32Exception LastWin32Error(string operation) =>
-        new(Marshal.GetLastWin32Error(), operation);
+    private static Win32Exception CreateWin32Exception(string apiName, int error, uint sessionId) =>
+        new(error, $"{apiName} failed for session {sessionId}: {new Win32Exception(error).Message}");
 
     private enum WtsConnectState
     {
@@ -245,7 +302,7 @@ internal static class SessionLauncher
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool CreateEnvironmentBlock(out IntPtr environment, IntPtr token, bool inherit);
 
-        [DllImport("userenv.dll")]
+        [DllImport("userenv.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool DestroyEnvironmentBlock(IntPtr environment);
 
