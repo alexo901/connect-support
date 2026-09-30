@@ -1123,7 +1123,7 @@ app.get(
         res,
         {
           attachment: true,
-          downloadName: "Connect Support Web Setup 1.0.3.exe",
+          downloadName: `ConnectSupport-Setup-${code}.exe`,
           noStore: true,
         }
       );
@@ -1152,7 +1152,7 @@ app.get("/api/download/installer-file", async (req, res) => {
     if (!(await validateSupportCode(code))) return res.status(404).json({ error: "Support code not found" });
     return streamInstallerFile("Connect Support Web Setup 1.0.3.exe", req, res, {
       attachment: true,
-      downloadName: "Connect Support Web Setup 1.0.3.exe",
+      downloadName: `ConnectSupport-Setup-${code}.exe`,
       noStore: true,
     });
   } catch (err) {

@@ -5,10 +5,9 @@ export default function DownloadClient() {
   const [params] = useSearchParams();
   const code = params.get("code") || "";
 
-  // Small NSIS Web installer hosted on GitHub Release.
-  // The installer downloads the remaining application package during installation.
+  // The backend validates the support code and serves the Azure-hosted NSIS Web setup with a code-specific filename.
   const downloadUrl = code
-    ? "https://github.com/alexo901/connect-support/releases/download/v1.0.0/Connect%20Support%20Web%20Setup%201.0.0.exe"
+    ? `https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net/api/download/installer?code=${encodeURIComponent(code)}`
     : "";
 
   return (

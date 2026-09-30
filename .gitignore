@@ -11,6 +11,9 @@ out/
 # Build outputs
 dist/
 build/
+!windows-client/build/
+windows-client/build/*
+!windows-client/build/installer.nsh
 
 # Environment files
 .env
@@ -20,6 +23,9 @@ build/
 # Electron / Windows client
 windows-client/out/
 windows-client/.webpack/
+windows-client/windows-service/bin/
+windows-client/windows-service/obj/
+windows-client/windows-service/publish/
 
 # OS
 .DS_Store

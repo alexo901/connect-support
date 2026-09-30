@@ -7,8 +7,9 @@
   "scripts": {
     "start": "electron . --server=https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net",
     "dev": "electron . --dev --server=https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net",
-    "dist": "electron-builder --win nsis-web",
-    "dist:web": "electron-builder --win nsis-web"
+    "build:service": "dotnet publish windows-service/ConnectSupportService.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:RestoreSources=https://api.nuget.org/v3/index.json -o windows-service/publish",
+    "dist": "npm run build:service && electron-builder --win nsis-web",
+    "dist:web": "npm run dist"
   },
   "dependencies": {
     "@nut-tree-fork/nut-js": "^4.2.6",
@@ -40,6 +41,15 @@
     "files": [
       "src/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "windows-service/publish",
+        "to": "windows-service",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "win": {
       "target": [

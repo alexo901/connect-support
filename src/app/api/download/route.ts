@@ -23,8 +23,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Support code not found" }, { status: 404 });
     }
 
-    // Return the stub installer info — the actual .exe embeds the code
-    // The installer is a lightweight stub that downloads the full agent at runtime
+    // The web setup is code-specific by its download filename; NSIS reads it to write agent config.
     const serverUrl = process.env.SOCKET_SERVER_URL ||
       "https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net";
 
@@ -33,7 +32,6 @@ export async function GET(req: NextRequest) {
       code,
       deviceId: rows[0].id,
       fileName: `ConnectSupport-Setup-${code}.exe`,
-      // In production this would be a real signed .exe URL from Azure Blob / GitHub Releases
       downloadUrl: `/api/download/stub?code=${code}`,
       serverUrl,
       instructions: [

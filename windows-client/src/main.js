@@ -5,9 +5,6 @@
 
 "use strict";
 
-// Squirrel install events
-if (require("electron-squirrel-startup")) process.exit(0);
-
 const {
   app,
   BrowserWindow,
@@ -22,6 +19,13 @@ const {
   desktopCapturer,
 } = require("electron");
 
+// Fall back to Chromium software rendering before startup if hardware GPU initialization fails.
+// Keep the software rasterizer enabled so WebRTC and screen capture stay available.
+app.disableHardwareAcceleration();
+
+// Squirrel install events
+if (require("electron-squirrel-startup")) process.exit(0);
+
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
@@ -29,315 +33,6 @@ const { io } = require("socket.io-client");
 
 const PRODUCTION_SERVER_URL =
   "https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net";
-const SERVICE_NAME = "ConnectSupportAgent";
-const SERVICE_DISPLAY_NAME = "ConnectSupportAgent";
-
-const isInstallService = process.argv.includes("--install-service");
-const isUninstallService = process.argv.includes("--uninstall-service");
-const isServiceMode = process.argv.includes("--service");
-
-if (isServiceMode) {
-  app.disableHardwareAcceleration();
-  app.commandLine.appendSwitch("disable-gpu");
-  app.commandLine.appendSwitch("disable-software-rasterizer");
-  app.commandLine.appendSwitch("no-sandbox");
-}
-
-function getActiveInteractiveSessionId() {
-  if (process.platform !== "win32") {
-    return null;
-  }
-
-  const { spawnSync } = require("child_process");
-  const result = spawnSync(
-    "powershell.exe",
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      "[int]$sessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId; if ($sessionId -eq 0) { $active = [int](Get-CimInstance Win32_Session | Where-Object { $_.State -eq 'Running' -and $_.SessionName -ne 'services' } | Sort-Object SessionId | Select-Object -Last 1 -ExpandProperty SessionId); if ($active -eq $null) { $active = 0 }; $active } else { $sessionId }",
-    ],
-    {
-      encoding: "utf8",
-      windowsHide: true,
-    }
-  );
-
-  if (result.error || result.status !== 0) {
-    return null;
-  }
-
-  const sessionId = String(result.stdout || "").trim();
-  return /^\d+$/.test(sessionId) ? Number(sessionId) : null;
-}
-
-function startInteractiveAgentInUserSession() {
-  if (process.platform !== "win32") {
-    return;
-  }
-
-  const { spawnSync } = require("child_process");
-  const sessionId = getActiveInteractiveSessionId();
-
-  if (sessionId === null || sessionId === 0) {
-    console.log("[Service] No interactive session available for hidden agent launch");
-    return;
-  }
-
-  const lockPath = path.join(app.getPath("userData"), "session-lock.json");
-  const lock = (() => {
-    try {
-      if (fs.existsSync(lockPath)) {
-        return JSON.parse(fs.readFileSync(lockPath, "utf8"));
-      }
-    } catch {}
-    return null;
-  })();
-
-  if (lock && Number(lock.sessionId) === Number(sessionId)) {
-    console.log("[Service] Hidden agent already running for this interactive session");
-    return;
-  }
-
-  const exePath = process.execPath;
-  const cmdLine = `"${exePath}" --hidden --session-id=${sessionId}`;
-  const safeCmdLine = cmdLine.replace(/'/g, "''");
-  const script = [
-    "Add-Type -TypeDefinition @'",
-    "using System;",
-    "using System.Runtime.InteropServices;",
-    "",
-    "public static class WinSessionApi {",
-    "  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]",
-    "  public struct STARTUPINFO {",
-    "    public int cb;",
-    "    public string lpReserved;",
-    "    public string lpDesktop;",
-    "    public string lpTitle;",
-    "    public int dwX;",
-    "    public int dwY;",
-    "    public int dwXSize;",
-    "    public int dwYSize;",
-    "    public int dwXCountChars;",
-    "    public int dwYCountChars;",
-    "    public int dwFillAttribute;",
-    "    public int dwFlags;",
-    "    public short wShowWindow;",
-    "    public short cbReserved2;",
-    "    public IntPtr lpReserved2;",
-    "    public IntPtr hStdInput;",
-    "    public IntPtr hStdOutput;",
-    "    public IntPtr hStdError;",
-    "  }",
-    "",
-    "  [StructLayout(LayoutKind.Sequential)]",
-    "  public struct PROCESS_INFORMATION {",
-    "    public IntPtr hProcess;",
-    "    public IntPtr hThread;",
-    "    public int dwProcessId;",
-    "    public int dwThreadId;",
-    "  }",
-    "",
-    "  [DllImport(\"wtsapi32.dll\", SetLastError = true)]",
-    "  public static extern bool WTSQueryUserToken(uint SessionId, out IntPtr phToken);",
-    "",
-    "  [DllImport(\"advapi32.dll\", SetLastError = true, CharSet = CharSet.Unicode)]",
-    "  public static extern bool DuplicateTokenEx(",
-    "    IntPtr hExistingToken,",
-    "    uint dwDesiredAccess,",
-    "    IntPtr lpTokenAttributes,",
-    "    int ImpersonationLevel,",
-    "    int TokenType,",
-    "    out IntPtr phNewToken);",
-    "",
-    "  [DllImport(\"userenv.dll\", SetLastError = true)]",
-    "  public static extern bool CreateEnvironmentBlock(out IntPtr lpEnvironment, IntPtr hToken, bool bInherit);",
-    "",
-    "  [DllImport(\"userenv.dll\", SetLastError = true)]",
-    "  public static extern bool DestroyEnvironmentBlock(IntPtr lpEnvironment);",
-    "",
-    "  [DllImport(\"advapi32.dll\", SetLastError = true, CharSet = CharSet.Unicode)]",
-    "  public static extern bool CreateProcessAsUserW(",
-    "    IntPtr hToken,",
-    "    string lpApplicationName,",
-    "    string lpCommandLine,",
-    "    IntPtr lpProcessAttributes,",
-    "    IntPtr lpThreadAttributes,",
-    "    bool bInheritHandles,",
-    "    uint dwCreationFlags,",
-    "    IntPtr lpEnvironment,",
-    "    string lpCurrentDirectory,",
-    "    ref STARTUPINFO lpStartupInfo,",
-    "    out PROCESS_INFORMATION lpProcessInformation);",
-    "",
-    "  [DllImport(\"kernel32.dll\", SetLastError = true)]",
-    "  public static extern bool CloseHandle(IntPtr hObject);",
-    "",
-    "  [DllImport(\"kernel32.dll\", SetLastError = true)]",
-    "  public static extern int GetLastError();",
-    "}",
-    "'@",
-    `$sessionId = ${sessionId};`,
-    "$token = [IntPtr]::Zero;",
-    "$duplicateToken = [IntPtr]::Zero;",
-    "$environment = [IntPtr]::Zero;",
-    "$startupInfo = New-Object WinSessionApi+STARTUPINFO;",
-    "$startupInfo.cb = [System.Runtime.InteropServices.Marshal]::SizeOf($startupInfo);",
-    "$startupInfo.dwFlags = 0x00000001;",
-    "$startupInfo.wShowWindow = 0;",
-    "$processInfo = New-Object WinSessionApi+PROCESS_INFORMATION;",
-    "$userTokenOk = [WinSessionApi]::WTSQueryUserToken([uint32]$sessionId, [ref]$token);",
-    "if (-not $userTokenOk) { throw \"WTSQueryUserToken failed for session $sessionId\"; }",
-    "$duplicateOk = [WinSessionApi]::DuplicateTokenEx($token, 0x000F0000, [IntPtr]::Zero, 2, 1, [ref]$duplicateToken);",
-    "if (-not $duplicateOk) { throw \"DuplicateTokenEx failed\"; }",
-    "$envOk = [WinSessionApi]::CreateEnvironmentBlock([ref]$environment, $duplicateToken, $false);",
-    "if (-not $envOk) { throw \"CreateEnvironmentBlock failed\"; }",
-    `$cmdLine = '${safeCmdLine}';`,
-    "$processCreated = [WinSessionApi]::CreateProcessAsUserW(",
-    "  $duplicateToken,",
-    "  $null,",
-    "  $cmdLine,",
-    "  [IntPtr]::Zero,",
-    "  [IntPtr]::Zero,",
-    "  $false,",
-    "  0x00000010,",
-    "  $environment,",
-    "  $null,",
-    "  [ref]$startupInfo,",
-    "  [ref]$processInfo",
-    ");",
-    "if (-not $processCreated) { throw \"CreateProcessAsUserW failed for session $sessionId\"; }",
-    "if ($environment -ne [IntPtr]::Zero) { [void][WinSessionApi]::DestroyEnvironmentBlock($environment); }",
-    "if ($duplicateToken -ne [IntPtr]::Zero) { [void][WinSessionApi]::CloseHandle($duplicateToken); }",
-    "if ($token -ne [IntPtr]::Zero) { [void][WinSessionApi]::CloseHandle($token); }",
-    "if ($processInfo.hProcess -ne [IntPtr]::Zero) { [void][WinSessionApi]::CloseHandle($processInfo.hProcess); }",
-    "if ($processInfo.hThread -ne [IntPtr]::Zero) { [void][WinSessionApi]::CloseHandle($processInfo.hThread); }",
-    "Write-Output $processInfo.dwProcessId",
-  ].join("\n");
-
-  const result = spawnSync("powershell.exe", [
-    "-NoProfile",
-    "-NonInteractive",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
-    script,
-  ], {
-    encoding: "utf8",
-    windowsHide: true,
-  });
-
-  if (result.error) {
-    console.error("[Service] Session-aware agent launch failed:", result.error.message);
-    return;
-  }
-
-  if (result.status !== 0) {
-    console.error("[Service] Session-aware agent launch error:", (result.stderr || result.stdout || "").trim());
-    return;
-  }
-
-  const pid = String(result.stdout || "").trim();
-  if (!/^\d+$/.test(pid)) {
-    console.error("[Service] Could not determine launched process id");
-    return;
-  }
-
-  fs.writeFileSync(lockPath, JSON.stringify({ sessionId, pid: Number(pid), createdAt: Date.now() }), "utf8");
-  console.log("[Service] Hidden agent launched in session", sessionId, "pid", pid);
-}
-
-
-function installWindowsService() {
-  if (process.platform !== "win32") {
-    console.error("[Service] This install command is only supported on Windows.");
-    process.exit(1);
-  }
-
-  const { spawnSync } = require("child_process");
-  const exePath = process.execPath;
-  const serviceBinary = `"${exePath}" --service`;
-
-  const commands = [
-    {
-      args: [
-        "create",
-        SERVICE_NAME,
-        "binPath=",
-        serviceBinary,
-        "start=",
-        "auto",
-        "obj=",
-        "LocalSystem",
-      ],
-      label: "create",
-    },
-    {
-      args: ["description", SERVICE_NAME, SERVICE_DISPLAY_NAME],
-      label: "description",
-    },
-  ];
-
-  for (const command of commands) {
-    const result = spawnSync("sc.exe", command.args, {
-      stdio: "inherit",
-      shell: false,
-    });
-
-    if (result.error) {
-      console.error("[Service] Install command failed:", result.error);
-      process.exit(1);
-    }
-
-    if (result.status !== 0) {
-      console.error(`[Service] sc.exe ${command.label} failed with status ${result.status}`);
-      process.exit(result.status || 1);
-    }
-  }
-
-  console.log("[Service] Installed successfully:", SERVICE_NAME);
-  process.exit(0);
-}
-
-function uninstallWindowsService() {
-  if (process.platform !== "win32") {
-    console.error("[Service] This uninstall command is only supported on Windows.");
-    process.exit(1);
-  }
-
-  const { spawnSync } = require("child_process");
-  const stopResult = spawnSync("sc.exe", ["stop", SERVICE_NAME], {
-    stdio: "inherit",
-    shell: false,
-  });
-
-  if (stopResult.error) {
-    console.error("[Service] Stop command failed:", stopResult.error);
-  }
-
-  const deleteResult = spawnSync("sc.exe", ["delete", SERVICE_NAME], {
-    stdio: "inherit",
-    shell: false,
-  });
-
-  if (deleteResult.error) {
-    console.error("[Service] Uninstall command failed:", deleteResult.error);
-    process.exit(1);
-  }
-
-  console.log("[Service] Uninstalled successfully:", SERVICE_NAME);
-  process.exit(0);
-}
-
-if (isInstallService) {
-  installWindowsService();
-}
-
-if (isUninstallService) {
-  uninstallWindowsService();
-}
 
 // ── Read config ───────────────────────────────────────────────────────────────
 function loadConfig() {
@@ -596,7 +291,7 @@ document.getElementById("deny").addEventListener("click", () => {
 }
 
 // ── Setup window ──────────────────────────────────────────────────────────────
-function showSetupWindow() {
+function showSetupWindow({ hidden = false } = {}) {
   if (setupWindow && !setupWindow.isDestroyed()) {
     setupWindow.focus();
     return;
@@ -848,7 +543,7 @@ code.addEventListener("keydown", (event) => {
     `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
   );
 
-  setupWindow.show();
+  if (!hidden) setupWindow.show();
 
   setupWindow.on("closed", () => {
     setupWindow = null;
@@ -873,7 +568,7 @@ ipcMain.handle("configure-agent", async (_event, supportCode) => {
   persistConfig();
 
   if (setupWindow && !setupWindow.isDestroyed()) {
-    setupWindow.close();
+    setupWindow.hide();
   }
 
   updateTrayMenu();
@@ -1725,18 +1420,6 @@ function connectSocket() {
 
 // ── App startup ────────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
-  if (isServiceMode) {
-    console.log("[Service] Starting in service mode");
-
-    startInteractiveAgentInUserSession();
-
-    if (CONFIG.supportCode && CONFIG.serverUrl.startsWith("https://")) {
-      connectSocket();
-    }
-
-    return;
-  }
-
   if (process.platform === "darwin") {
     app.dock?.hide();
   }
@@ -1749,6 +1432,13 @@ app.whenReady().then(() => {
       "[Agent] Tray creation failed:",
       err.message
     );
+  }
+
+  // Keep the WebRTC renderer alive without showing the support-code setup UI.
+  // The installer-provisioned agent connects automatically, but still prompts
+  // the customer to approve each technician session.
+  if (CONFIG.supportCode && !setupWindow) {
+    showSetupWindow({ hidden: true });
   }
 
   try {

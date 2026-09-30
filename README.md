@@ -13,8 +13,8 @@ No billing, no multi-tenancy, no corporate SaaS complexity — just you helping 
 │                         CONNECT SUPPORT                         │
 ├──────────────────┬──────────────────┬───────────────────────────┤
 │  Next.js App     │  Windows Client  │  Standalone Frontend       │
-│  (This repo)     │  (Electron)      │  (React + Vite)           │
-│  Netlify / Azure │  GitHub Releases │  Netlify                  │
+│  (This repo)     │  (Service + Electron)│ (React + Vite)        │
+│  Netlify / Azure │  Azure Blob NSIS Web │ Netlify                │
 └──────────────────┴──────────────────┴───────────────────────────┘
          │                  │                      │
          └──────────────────┴──────────────────────┘
@@ -35,7 +35,9 @@ connect-support/
 │   └── src/server.js
 │
 ├── windows-client/             ← Electron Windows Agent
-│   ├── package.json            ← Electron Forge + Squirrel
+│   ├── package.json            ← Electron Builder NSIS Web
+│   ├── build/installer.nsh     ← Registers/removes the Windows service
+│   ├── windows-service/        ← .NET 8 Windows service + session launcher
 │   └── src/
 │       ├── main.js             ← Full agent implementation
 │       └── preload.js          ← Secure renderer bridge
@@ -208,38 +210,25 @@ The system uses JWT tokens (12-hour expiry) with bcrypt password hashing.
 ### Features
 - **Invisible** — No taskbar entry, no Start Menu shortcut, no Desktop icon
 - **System Tray** — Small icon with connectivity status
-- **Auto-start** — Added to Windows Registry Run key automatically
+- **Auto-start** — Windows Service Control Manager starts the LocalSystem service automatically
 - **Auto-reconnect** — Reconnects after network drops or system reboots
 - **Single instance** — Prevents duplicate agents
 
 ### Installation (Production)
-The stub installer pattern works as follows:
-1. User gets `ConnectSupport-Setup-XXXXXX.ps1` (tiny ~2KB)
-2. Script downloads the full Electron agent from GitHub Releases
-3. Extracts to `%LOCALAPPDATA%\ConnectSupport\`
-4. Writes `config.json` with support code + server URL
-5. Adds Registry Run key for auto-start
-6. Launches agent silently (`--hidden` flag)
+1. The customer downloads the small, code-specific Connect Support NSIS Web setup executable.
+2. The installer downloads the app package from Azure Blob Storage.
+3. NSIS writes the server URL and verified support code into the installed agent configuration.
+4. NSIS registers `ConnectSupportAgent` as an automatic LocalSystem Windows service and starts it.
+5. The .NET service launches and monitors the Electron agent in the active user's interactive session; the technician request still requires customer approval.
 
 ### Building the Windows Client
 ```bash
 cd windows-client
 npm install
-npm run package    # Package for current platform
-npm run make       # Create installer (Squirrel.Windows)
-npm run publish    # Publish to GitHub Releases
+npm run dist       # Build the self-contained service and NSIS Web artifacts
 ```
 
-**Important:** Set your GitHub repo in `package.json` forge config before publishing.
-
-### Electron Forge Squirrel Config (no visible install prompts)
-```json
-{
-  "createDesktopShortcut": false,
-  "createStartMenuShortcut": false,
-  "noMsi": true
-}
-```
+Publish the generated NSIS Web setup executable, package archive, and `latest.yml` to the configured Azure Blob Storage container. The setup executable is small; the app package remains the separate web-download payload.
 
 ---
 
@@ -347,11 +336,11 @@ chat_messages -- id, session_id, sender, message, created_at
 | Database | PostgreSQL / Supabase via Drizzle ORM |
 | Real-time | Socket.io 4 |
 | Auth | JWT (jsonwebtoken) + bcrypt |
-| Windows Client | Electron 29 + Electron Forge |
+| Windows Client | Electron 29 + Electron Builder NSIS Web + .NET 8 Windows Service |
 | Screen Capture | screenshot-desktop |
 | Input Control | @nut-tree/nut-js |
 | Deploy (Web) | Netlify / Azure App Service |
-| Deploy (Agent) | GitHub Releases (Squirrel.Windows) |
+| Deploy (Agent) | Azure Blob Storage (NSIS Web package) |
 
 ---
 
