@@ -19,23 +19,162 @@ const {
   desktopCapturer,
 } = require("electron");
 
-// Fall back to Chromium software rendering before startup if hardware GPU initialization fails.
-// Keep the software rasterizer enabled so WebRTC and screen capture stay available.
-app.disableHardwareAcceleration();
-
-// Squirrel install events
-if (require("electron-squirrel-startup")) process.exit(0);
-
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
 const { io } = require("socket.io-client");
+
+let startupStage = "electron-main-loaded";
+let startupLogPath = null;
+
+function safeStartupLogPath() {
+  try {
+    return path.join(app.getPath("userData"), "logs", "agent.log");
+  } catch {
+    const appData = process.env.APPDATA || os.homedir();
+    return path.join(appData, "Connect Support", "logs", "agent.log");
+  }
+}
+
+function formatLogPart(value) {
+  if (value instanceof Error) return value.stack || value.message;
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function writeAgentLog(level, ...parts) {
+  const line = `[${new Date().toISOString()}] [${level}] [stage=${startupStage}] ${parts.map(formatLogPart).join(" ")}`;
+  const original = originalConsole[level] || originalConsole.log;
+  try {
+    original.call(console, line);
+  } catch {}
+
+  try {
+    startupLogPath ||= safeStartupLogPath();
+    fs.mkdirSync(path.dirname(startupLogPath), { recursive: true });
+    fs.appendFileSync(startupLogPath, `${line}${os.EOL}`, "utf8");
+  } catch (error) {
+    try {
+      originalConsole.error.call(console, "[Agent] Could not write startup log:", error);
+    } catch {}
+  }
+}
+
+const originalConsole = {
+  log: console.log,
+  info: console.info,
+  warn: console.warn,
+  error: console.error,
+};
+console.log = (...args) => writeAgentLog("log", ...args);
+console.info = (...args) => writeAgentLog("info", ...args);
+console.warn = (...args) => writeAgentLog("warn", ...args);
+console.error = (...args) => writeAgentLog("error", ...args);
+
+function setStartupStage(stage) {
+  startupStage = stage;
+  writeAgentLog("info", "Initialization stage:", stage);
+}
+
+function redactProcessArguments(args) {
+  let redactNext = false;
+  return args.map((arg) => {
+    if (redactNext) {
+      redactNext = false;
+      return "[redacted]";
+    }
+    if (arg === "--code") {
+      redactNext = true;
+      return arg;
+    }
+    if (arg.startsWith("--code=")) return "--code=[redacted]";
+    return arg;
+  });
+}
+
+process.on("uncaughtExceptionMonitor", (error, origin) => {
+  writeAgentLog("error", "uncaughtException", { origin, error });
+});
+process.on("unhandledRejection", (reason) => {
+  writeAgentLog("error", "unhandledRejection", reason);
+  setImmediate(() => {
+    throw reason instanceof Error ? reason : new Error(String(reason));
+  });
+});
+process.on("warning", (warning) => writeAgentLog("warn", "process warning", warning));
+process.on("exit", (code) => writeAgentLog("info", "process exit", { code }));
+
+// Force Chromium onto its software-rendering path before Electron becomes ready.
+// Do not disable the software rasterizer: WebRTC/media and desktop capture need it.
+app.commandLine.appendSwitch("disable-gpu");
+app.disableHardwareAcceleration();
+writeAgentLog("info", "Electron startup", {
+  arguments: redactProcessArguments(process.argv),
+  electronVersion: process.versions.electron,
+  chromeVersion: process.versions.chrome,
+  nodeVersion: process.versions.node,
+  pid: process.pid,
+  platform: process.platform,
+  username: process.env.USERNAME || os.userInfo().username,
+  sessionName: process.env.SESSIONNAME || "<unset>",
+  userProfile: process.env.USERPROFILE || "<unset>",
+  switches: ["disable-gpu", "disableHardwareAcceleration"],
+});
+
+app.on("child-process-gone", (_event, details) => {
+  writeAgentLog("error", "Electron child-process-gone", details);
+});
+app.on("web-contents-created", (_event, contents) => {
+  writeAgentLog("info", "Renderer/web-contents created", {
+    id: contents.id,
+    url: contents.getURL(),
+  });
+  contents.on("render-process-gone", (_renderEvent, details) => {
+    writeAgentLog("error", "render-process-gone", {
+      webContentsId: contents.id,
+      url: contents.getURL(),
+      details,
+    });
+  });
+  contents.on("did-fail-load", (_loadEvent, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    writeAgentLog("error", "renderer did-fail-load", {
+      webContentsId: contents.id,
+      errorCode,
+      errorDescription,
+      validatedURL,
+      isMainFrame,
+    });
+  });
+  contents.on("did-finish-load", () => {
+    writeAgentLog("info", "renderer did-finish-load", {
+      webContentsId: contents.id,
+      url: contents.getURL(),
+    });
+  });
+  contents.on("console-message", (_consoleEvent, level, message, line, sourceId) => {
+    writeAgentLog(level >= 2 ? "error" : level === 1 ? "warn" : "info", "renderer console", {
+      webContentsId: contents.id,
+      message,
+      line,
+      sourceId,
+    });
+  });
+});
+
+// Squirrel install events
+if (require("electron-squirrel-startup")) process.exit(0);
 
 const PRODUCTION_SERVER_URL =
   "https://supportas-fxdwbkfyfgfbg2g5.canadacentral-01.azurewebsites.net";
 
 // ── Read config ───────────────────────────────────────────────────────────────
 function loadConfig() {
+  setStartupStage("loading-agent-configuration");
+  writeAgentLog("info", "Loading agent configuration.");
   const args = process.argv.slice(2);
 
   const readArg = (name) => {
@@ -103,20 +242,24 @@ function loadConfig() {
     ),
   };
 
-  console.log("[Agent] Config sources:", {
-    argv: process.argv.slice(2),
+  writeAgentLog("info", "Configuration loaded.", {
+    argv: redactProcessArguments(process.argv.slice(2)),
     execPath: process.execPath,
     configPath,
     installConfigPath,
     cliCodeLoaded: !!argCode,
     fileCodeLoaded: !!fileConfig.supportCode,
     installCodeLoaded: !!installConfig.supportCode,
-    supportCode: config.supportCode,
+    supportCodeConfigured: config.supportCode.length === 6,
+    serverUrl: config.serverUrl,
+    consentAsked: config.consentAsked,
+    unattendedAccess: config.unattendedAccess,
   });
   return config;
 }
 
 let CONFIG = loadConfig();
+setStartupStage("configuration-loaded");
 
 function persistConfig() {
   try {
@@ -142,6 +285,11 @@ if (CONFIG.supportCode && CONFIG.serverUrl.startsWith("https://")) {
 
 const IS_DEV = process.argv.includes("--dev");
 const IS_HIDDEN_START = process.argv.includes("--hidden");
+writeAgentLog("info", "Startup mode selected.", {
+  hidden: IS_HIDDEN_START,
+  development: IS_DEV,
+  supportCodeConfigured: CONFIG.supportCode.length === 6,
+});
 
 let setupWindow = null;
 let consentWindow = null;
@@ -170,6 +318,7 @@ if (CONFIG.supportCode && CONFIG.serverUrl.startsWith("https://")) {
 const gotLock = app.requestSingleInstanceLock();
 
 if (!gotLock) {
+  writeAgentLog("warn", "Another Connect Support agent instance already owns the single-instance lock; exiting.");
   app.quit();
   process.exit(0);
 }
@@ -196,6 +345,7 @@ function showConsentWindow() {
     return;
   }
 
+  writeAgentLog("info", "Creating consent window.");
   consentWindow = new BrowserWindow({
     width: 520,
     height: 340,
@@ -279,13 +429,14 @@ document.getElementById("deny").addEventListener("click", () => {
 </body>
 </html>`;
 
-  consentWindow.loadURL(
-    `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
-  );
+  consentWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+    .then(() => writeAgentLog("info", "Consent window content loaded."))
+    .catch((error) => writeAgentLog("error", "Consent window load failed.", error));
 
   consentWindow.show();
 
   consentWindow.on("closed", () => {
+    writeAgentLog("info", "Consent window closed.");
     consentWindow = null;
   });
 }
@@ -297,6 +448,7 @@ function showSetupWindow({ hidden = false } = {}) {
     return;
   }
 
+  writeAgentLog("info", "Creating setup/WebRTC renderer window.", { hidden });
   setupWindow = new BrowserWindow({
     width: 480,
     height: 430,
@@ -513,7 +665,7 @@ button.addEventListener("click", async () => {
   const supportCode = code.value.trim().replace(/[^0-9]/g, "");
   console.log("[Agent] Setup code submitted", {
     rawLength: code.value.length,
-    normalizedCode: supportCode,
+    supportCodeValid: supportCode.length === 6,
   });
   if (supportCode.length !== 6) {
     error.textContent = "Enter exactly 6 digits.";
@@ -539,13 +691,14 @@ code.addEventListener("keydown", (event) => {
 </body>
 </html>`;
 
-  setupWindow.loadURL(
-    `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
-  );
+  setupWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+    .then(() => writeAgentLog("info", "Setup/WebRTC renderer content loaded.", { hidden }))
+    .catch((error) => writeAgentLog("error", "Setup/WebRTC renderer load failed.", error));
 
   if (!hidden) setupWindow.show();
 
   setupWindow.on("closed", () => {
+    writeAgentLog("info", "Setup/WebRTC renderer window closed.");
     setupWindow = null;
   });
 }
@@ -618,7 +771,12 @@ ipcMain.on("send-webrtc-signaling", (_event, data) => {
   });
 });
 
-console.log("[Agent] Config:", CONFIG);
+writeAgentLog("info", "Effective agent configuration.", {
+  serverUrl: CONFIG.serverUrl,
+  supportCodeConfigured: CONFIG.supportCode.length === 6,
+  unattendedAccess: CONFIG.unattendedAccess,
+  consentAsked: CONFIG.consentAsked,
+});
 
 // ── Auto start ────────────────────────────────────────────────────────────────
 // ── Tray ──────────────────────────────────────────────────────────────────────
@@ -1142,10 +1300,11 @@ function connectSocket() {
     return;
   }
 
-  console.log(
-    "[Agent] Connecting to:",
-    CONFIG.serverUrl
-  );
+  setStartupStage("initializing-socket-io");
+  writeAgentLog("info", "Initializing Socket.IO client.", {
+    serverUrl: CONFIG.serverUrl,
+    supportCodeConfigured: CONFIG.supportCode.length === 6,
+  });
 
   socket = io(CONFIG.serverUrl, {
     transports: ["websocket", "polling"],
@@ -1154,8 +1313,11 @@ function connectSocket() {
     reconnectionDelay: 2000,
     reconnectionDelayMax: 30000,
   });
+  writeAgentLog("info", "Socket.IO client initialized.");
 
   socket.on("connect", () => {
+    setStartupStage("socket-connected");
+    writeAgentLog("info", "Socket.IO connected.", { socketId: socket.id });
     console.log(
       "[Agent] Socket connected:",
       socket.id
@@ -1172,9 +1334,11 @@ function connectSocket() {
       unattendedAccess: CONFIG.unattendedAccess,
       sessionId: activeSessionId,
     });
-      console.log("[Agent] register-client emitted", {
-        supportCode: CONFIG.supportCode,
+      setStartupStage("customer-registration-emitted");
+      writeAgentLog("info", "Customer registration emitted.", {
+        supportCodeConfigured: CONFIG.supportCode.length === 6,
         serverUrl: CONFIG.serverUrl,
+        computerName: os.hostname(),
       });
       if (registrationHeartbeat) clearInterval(registrationHeartbeat);
       registrationHeartbeat = setInterval(() => {
@@ -1186,12 +1350,15 @@ function connectSocket() {
             unattendedAccess: CONFIG.unattendedAccess,
             sessionId: activeSessionId,
           });
-          console.log("[Agent] register-client heartbeat emitted", CONFIG.supportCode);
+          writeAgentLog("info", "Customer registration heartbeat emitted.", {
+            supportCodeConfigured: CONFIG.supportCode.length === 6,
+          });
         }
       }, 30000); // every 5 minutes
   });
 
   socket.on("disconnect", (reason) => {
+    writeAgentLog("warn", "Socket.IO disconnected.", { reason });
     console.log(
       "[Agent] Socket disconnected:",
       reason
@@ -1211,6 +1378,7 @@ function connectSocket() {
   });
 
   socket.on("connect_error", (err) => {
+    writeAgentLog("error", "Socket.IO connection error.", err);
     console.error(
       "[Agent] Connection error:",
       err.message
@@ -1222,6 +1390,10 @@ function connectSocket() {
   });
 
   socket.on("approval-request", (data) => {
+    setStartupStage("technician-approval-request-received");
+    writeAgentLog("info", "Technician approval request received.", {
+      sessionId: data?.sessionId,
+    });
     console.log(
       "[Agent] Approval request received:",
       data.sessionId
@@ -1244,6 +1416,10 @@ function connectSocket() {
   });
 
   socket.on("connection-approved", async ({ sessionId } = {}) => {
+    setStartupStage("technician-connection-approved");
+    writeAgentLog("info", "Technician connection approved; preparing screen capture.", {
+      sessionId,
+    });
     console.log(
       "[Agent] Connection approved. Starting WebRTC stream."
     );
@@ -1420,13 +1596,18 @@ function connectSocket() {
 
 // ── App startup ────────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
+  setStartupStage("electron-app-ready");
+  writeAgentLog("info", "Electron app.whenReady resolved.");
+
   if (process.platform === "darwin") {
     app.dock?.hide();
   }
 
   try {
+    setStartupStage("creating-system-tray");
     createTray();
     console.log("[Agent] Tray created");
+    setStartupStage("system-tray-created");
   } catch (err) {
     console.error(
       "[Agent] Tray creation failed:",
@@ -1438,6 +1619,7 @@ app.whenReady().then(() => {
   // The installer-provisioned agent connects automatically, but still prompts
   // the customer to approve each technician session.
   if (CONFIG.supportCode && !setupWindow) {
+    setStartupStage("creating-hidden-webrtc-renderer");
     showSetupWindow({ hidden: true });
   }
 
@@ -1469,6 +1651,7 @@ app.whenReady().then(() => {
     if (!CONFIG.consentAsked) {
       showConsentWindow();
     } else if (CONFIG.supportCode) {
+      setStartupStage("starting-background-socket-connection");
       connectSocket();
     } else {
       showSetupWindow();
@@ -1478,6 +1661,7 @@ app.whenReady().then(() => {
     showConsentWindow();
   } else if (CONFIG.supportCode) {
     console.log("[Agent] Starting socket connection");
+    setStartupStage("starting-socket-connection");
     connectSocket();
   } else {
     console.log("[Agent] Showing setup window");
@@ -1485,6 +1669,7 @@ app.whenReady().then(() => {
   }
 
   if (IS_DEV) {
+    writeAgentLog("info", "Creating development window.");
     const devWin = new BrowserWindow({
       width: 500,
       height: 300,
@@ -1515,6 +1700,10 @@ app.whenReady().then(() => {
       `)}`
     );
   }
+  setStartupStage("electron-startup-complete");
+}).catch((error) => {
+  writeAgentLog("error", "Electron app.whenReady/startup failed.", error);
+  app.exit(1);
 });
 
 app.on("window-all-closed", (event) => {
@@ -1532,6 +1721,8 @@ app.on("activate", () => {
 });
 
 app.on("before-quit", () => {
+  setStartupStage("before-quit");
+  writeAgentLog("warn", "Electron before-quit received.");
   globalShortcut.unregisterAll();
 
   closeAllPrivacyWindows();
@@ -1539,4 +1730,8 @@ app.on("before-quit", () => {
   if (socket) {
     socket.disconnect();
   }
+});
+
+app.on("will-quit", () => {
+  writeAgentLog("info", "Electron will-quit received.");
 });

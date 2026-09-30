@@ -11,6 +11,7 @@ internal sealed class AgentSupervisorService(ILogger<AgentSupervisorService> log
         Path.Combine(AppContext.BaseDirectory, "..", "..", "Connect Support.exe"));
 
     private Process? _agentProcess;
+    private int? _agentProcessId;
     private uint? _sessionId;
 
     public override Task StartAsync(CancellationToken cancellationToken)
@@ -78,30 +79,48 @@ internal sealed class AgentSupervisorService(ILogger<AgentSupervisorService> log
     {
         if (_agentProcess is not null)
         {
-            if (!_agentProcess.HasExited)
+            try
             {
+                if (!_agentProcess.HasExited)
+                {
+                    return;
+                }
+
+                logger.LogWarning("Interactive agent process {ProcessId} exited; restarting.", _agentProcessId);
+                ServiceFileLog.Write($"[Agent] PID {_agentProcessId} exited; restarting it.");
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or
+                                               ObjectDisposedException or
+                                               System.ComponentModel.Win32Exception)
+            {
+                // HasExited is valid for a process opened by PID. Do not read ExitCode:
+                // this service did not start the Process object through Process.Start.
+                logger.LogWarning(exception, "Could not query tracked agent PID {ProcessId}; will check by PID again.",
+                    _agentProcessId);
+                ServiceFileLog.Write($"[Agent] Could not query PID {_agentProcessId}; treating its state as uncertain: {exception}");
                 return;
             }
 
-            logger.LogWarning("Interactive agent process {ProcessId} exited with code {ExitCode}; restarting.",
-                _agentProcess.Id, _agentProcess.ExitCode);
             _agentProcess.Dispose();
             _agentProcess = null;
+            _agentProcessId = null;
         }
 
         _agentProcess = FindExistingAgent(sessionId);
         if (_agentProcess is not null)
         {
+            _agentProcessId = _agentProcess.Id;
             logger.LogInformation("Monitoring existing agent process {ProcessId} in session {SessionId}.",
-                _agentProcess.Id, sessionId);
+                _agentProcessId, sessionId);
             return;
         }
 
         stoppingToken.ThrowIfCancellationRequested();
         _agentProcess = SessionLauncher.Launch(_agentPath, sessionId);
+        _agentProcessId = _agentProcess.Id;
         logger.LogInformation("Started Connect Support.exe in session {SessionId} (PID {ProcessId}).",
-            sessionId, _agentProcess.Id);
-        ServiceFileLog.Write($"[Agent] Supervisor is tracking PID {_agentProcess.Id} in session {sessionId}.");
+            sessionId, _agentProcessId);
+        ServiceFileLog.Write($"[Agent] Supervisor is tracking PID {_agentProcessId} in session {sessionId}.");
     }
 
     private Process? FindExistingAgent(uint sessionId)
@@ -133,7 +152,9 @@ internal sealed class AgentSupervisorService(ILogger<AgentSupervisorService> log
     private async Task StopAgentAsync()
     {
         var process = _agentProcess;
+        var processId = _agentProcessId;
         _agentProcess = null;
+        _agentProcessId = null;
         if (process is null)
         {
             return;
@@ -143,6 +164,7 @@ internal sealed class AgentSupervisorService(ILogger<AgentSupervisorService> log
         {
             if (!process.HasExited)
             {
+                ServiceFileLog.Write($"[Agent] Stopping tracked PID {processId}.");
                 process.CloseMainWindow();
                 using var timeout = new CancellationTokenSource(GracefulStopTimeout);
                 try
@@ -158,6 +180,7 @@ internal sealed class AgentSupervisorService(ILogger<AgentSupervisorService> log
                     }
                 }
             }
+            ServiceFileLog.Write($"[Agent] Tracked PID {processId} has stopped.");
         }
         catch (Exception exception) when (exception is InvalidOperationException or
                                            System.ComponentModel.Win32Exception or
