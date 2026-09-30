@@ -26,6 +26,15 @@ const { io } = require("socket.io-client");
 
 let startupStage = "electron-main-loaded";
 let startupLogPath = null;
+const lifecycleState = {
+  supportCode: null,
+  unattended: false,
+  socketId: null,
+  socketConnected: false,
+  technicianRequest: false,
+  consentWindow: false,
+  webrtc: false,
+};
 
 function safeStartupLogPath() {
   try {
@@ -47,7 +56,7 @@ function formatLogPart(value) {
 }
 
 function writeAgentLog(level, ...parts) {
-  const line = `[${new Date().toISOString()}] [${level}] [stage=${startupStage}] ${parts.map(formatLogPart).join(" ")}`;
+  const line = `[${new Date().toISOString()}] [pid=${process.pid}] [${level}] [stage=${startupStage}] ${parts.map(formatLogPart).join(" ")} [state=${formatLogPart(lifecycleState)}]`;
   const original = originalConsole[level] || originalConsole.log;
   try {
     original.call(console, line);
@@ -96,14 +105,13 @@ function redactProcessArguments(args) {
   });
 }
 
-process.on("uncaughtExceptionMonitor", (error, origin) => {
+process.on("uncaughtException", (error, origin) => {
   writeAgentLog("error", "uncaughtException", { origin, error });
+  app.exit(1);
 });
 process.on("unhandledRejection", (reason) => {
   writeAgentLog("error", "unhandledRejection", reason);
-  setImmediate(() => {
-    throw reason instanceof Error ? reason : new Error(String(reason));
-  });
+  app.exit(1);
 });
 process.on("warning", (warning) => writeAgentLog("warn", "process warning", warning));
 process.on("exit", (code) => writeAgentLog("info", "process exit", { code }));
@@ -259,6 +267,8 @@ function loadConfig() {
 }
 
 let CONFIG = loadConfig();
+lifecycleState.supportCode = CONFIG.supportCode || null;
+lifecycleState.unattended = CONFIG.unattendedAccess;
 setStartupStage("configuration-loaded");
 
 function persistConfig() {
@@ -295,6 +305,8 @@ let setupWindow = null;
 let consentWindow = null;
 let tray = null;
 let approvalWindow = null;
+let pendingApprovalRequest = null;
+let approvalDecisionHandled = false;
 let privacyWindows = [];
 let socket = null;
 
@@ -566,7 +578,7 @@ let localScreenStream = null;
 
 const rtcConfig = {
   iceServers: [
-    { urls: "stun:://google.com" },
+    { urls: "stun:stun.l.google.com:19302" },
     {
       urls: "turn:openrelay.metered.ca:80",
       username: "openrelayproject",
@@ -581,7 +593,13 @@ const rtcConfig = {
 };
 
 async function startWebRtcStream(data) {
-  if (!data || !data.sourceId) return;
+  if (!data || !data.sourceId) {
+    console.error("[WebRTC] WEBRTC_START aborted: no desktop source selected.", {
+      hasData: !!data,
+      hasSourceId: !!data?.sourceId,
+    });
+    return;
+  }
 
   if (localScreenStream) {
     localScreenStream.getTracks().forEach((track) => track.stop());
@@ -609,10 +627,23 @@ async function startWebRtcStream(data) {
         optional: [{ minFrameRate: 10 }],
       },
     });
+    console.log("[WebRTC] Desktop capture started.", {
+      tracks: localScreenStream.getTracks().map((track) => ({ kind: track.kind, state: track.readyState })),
+    });
 
     const peerConnection = new RTCPeerConnection(rtcConfig);
+    console.log("[WebRTC] RTCPeerConnection created.");
 
     localPeerConnection = peerConnection;
+    peerConnection.addEventListener("connectionstatechange", () => {
+      console.log("[WebRTC] connectionState changed.", peerConnection.connectionState);
+    });
+    peerConnection.addEventListener("iceconnectionstatechange", () => {
+      console.log("[WebRTC] iceConnectionState changed.", peerConnection.iceConnectionState);
+    });
+    peerConnection.addEventListener("signalingstatechange", () => {
+      console.log("[WebRTC] signalingState changed.", peerConnection.signalingState);
+    });
 
     localScreenStream.getTracks().forEach((track) => {
       peerConnection.addTrack(track, localScreenStream);
@@ -620,6 +651,7 @@ async function startWebRtcStream(data) {
 
     peerConnection.onicecandidate = (event) => {
       if (!event.candidate) return;
+      console.log("[WebRTC] ICE_CANDIDATE_SENT", event.candidate.type);
       window.electronBridge.sendSignalOutgoing({
         type: "candidate",
         candidate: event.candidate.toJSON(),
@@ -628,8 +660,10 @@ async function startWebRtcStream(data) {
       });
     };
 
+    console.log("[WebRTC] Creating offer.");
     const offer = await peerConnection.createOffer();
     await peerConnection.setLocalDescription(offer);
+    console.log("[WebRTC] Local offer set; sending offer.");
     window.electronBridge.sendSignalOutgoing({
       type: "offer",
       sdp: offer.sdp,
@@ -637,7 +671,7 @@ async function startWebRtcStream(data) {
       supportCode: data.supportCode,
     });
   } catch (err) {
-    console.error("[Agent] WebRTC stream start failed:", err);
+    console.error("[WebRTC] WEBRTC_START failed.", err);
   }
 }
 
@@ -651,9 +685,14 @@ window.electronBridge.onSignalIncoming((payload) => {
   if (!payload || !localPeerConnection) return;
 
   if (payload.type === "answer") {
-    localPeerConnection.setRemoteDescription(new RTCSessionDescription(payload));
+    console.log("[WebRTC] WEBRTC_ANSWER_RECEIVED", { type: payload.type });
+    localPeerConnection.setRemoteDescription(new RTCSessionDescription(payload))
+      .then(() => console.log("[WebRTC] Remote answer applied."))
+      .catch((error) => console.error("[WebRTC] Applying remote answer failed.", error));
   } else if (payload.type === "candidate" && payload.candidate) {
-    localPeerConnection.addIceCandidate(new RTCIceCandidate(payload.candidate));
+    console.log("[WebRTC] ICE_CANDIDATE_RECEIVED", { candidateType: payload.candidate.type });
+    localPeerConnection.addIceCandidate(new RTCIceCandidate(payload.candidate))
+      .catch((error) => console.error("[WebRTC] Adding remote ICE candidate failed.", error));
   }
 });
 
@@ -717,6 +756,7 @@ ipcMain.handle("configure-agent", async (_event, supportCode) => {
     ...CONFIG,
     supportCode: normalizedCode,
   };
+  lifecycleState.supportCode = CONFIG.supportCode;
 
   persistConfig();
 
@@ -741,6 +781,7 @@ ipcMain.handle("save-consent", async (_event, enabled) => {
     unattendedAccess: !!enabled,
     consentAsked: true,
   };
+  lifecycleState.unattended = CONFIG.unattendedAccess;
 
   persistConfig();
 
@@ -763,8 +804,60 @@ ipcMain.handle("save-consent", async (_event, enabled) => {
   return { ok: true };
 });
 
+ipcMain.handle("approval-response", async (_event, approved) => {
+  if (!approvalWindow || approvalWindow.isDestroyed() || _event.sender !== approvalWindow.webContents) {
+    writeAgentLog("warn", "Rejected approval response from a non-consent renderer.");
+    return { ok: false, error: "Invalid consent window." };
+  }
+  const request = pendingApprovalRequest;
+  if (!request || approvalDecisionHandled) {
+    writeAgentLog("warn", "Ignored approval response without an active pending request.", {
+      approved: !!approved,
+    });
+    return { ok: false, error: "No pending connection request." };
+  }
+  if (!socket?.connected) {
+    writeAgentLog("error", "Cannot respond to technician request because Socket.IO is disconnected.", {
+      sessionId: request.sessionId,
+      socketId: socket?.id || null,
+    });
+    return { ok: false, error: "Connection to the support server was lost." };
+  }
+
+  approvalDecisionHandled = true;
+  lifecycleState.webrtc = false;
+  if (approved) {
+    setStartupStage("customer-consent-accepted");
+    writeAgentLog("info", "CONSENT_ACCEPTED", { sessionId: request.sessionId });
+    socket.emit("client-approved-connection", {
+      supportCode: CONFIG.supportCode,
+      sessionId: request.sessionId,
+    });
+  } else {
+    setStartupStage("customer-consent-rejected");
+    writeAgentLog("info", "CONSENT_REJECTED", { sessionId: request.sessionId });
+    socket.emit("client-rejected-connection", {
+      supportCode: CONFIG.supportCode,
+      sessionId: request.sessionId,
+    });
+  }
+
+  pendingApprovalRequest = null;
+  lifecycleState.technicianRequest = false;
+  if (approvalWindow && !approvalWindow.isDestroyed()) approvalWindow.close();
+  return { ok: true };
+});
+
 ipcMain.on("send-webrtc-signaling", (_event, data) => {
   if (!socket || !socket.connected || !data) return;
+  if (data.type === "offer") {
+    lifecycleState.webrtc = true;
+    writeAgentLog("info", "WEBRTC_OFFER_SENT", { sessionId: data.sessionId });
+  } else if (data.type === "answer") {
+    writeAgentLog("info", "WEBRTC_ANSWER_SENT", { sessionId: data.sessionId });
+  } else if (data.type === "candidate") {
+    writeAgentLog("info", "ICE_CANDIDATE_SENT", { sessionId: data.sessionId });
+  }
   socket.emit("webrtc-signaling", {
     ...data,
     supportCode: data.supportCode || CONFIG.supportCode,
@@ -851,6 +944,8 @@ function endSession() {
   console.log("[Agent] Ending session");
 
   sessionActive = false;
+  lifecycleState.webrtc = false;
+  lifecycleState.technicianRequest = false;
   activeSessionId = null;
 
   closeAllPrivacyWindows();
@@ -1062,16 +1157,25 @@ function setInputLock(locked) {
 
 // ── Approval ──────────────────────────────────────────────────────────────────
 function showApprovalWindow(data) {
+  pendingApprovalRequest = data;
+  approvalDecisionHandled = false;
+  lifecycleState.technicianRequest = true;
+
   if (approvalWindow && !approvalWindow.isDestroyed()) {
+    lifecycleState.consentWindow = true;
+    writeAgentLog("info", "Reusing and focusing the existing consent window.");
     approvalWindow.focus();
     return;
   }
 
+  setStartupStage("creating-consent-window");
+  writeAgentLog("info", "CONSENT_WINDOW_CREATE", { sessionId: data?.sessionId });
   approvalWindow = new BrowserWindow({
     width: 480,
     height: 340,
     resizable: false,
     alwaysOnTop: true,
+    modal: false,
     title: "Connect Support — Connection Request",
     skipTaskbar: true,
     frame: false,
@@ -1083,6 +1187,7 @@ function showApprovalWindow(data) {
       preload: path.join(__dirname, "preload.js"),
     },
   });
+  lifecycleState.consentWindow = true;
 
   const html = `
 <!doctype html>
@@ -1107,57 +1212,72 @@ Your technician is requesting remote access.
 
 <h1>${CONFIG.supportCode}</h1>
 
-<button
-  onclick="document.title='APPROVED'"
->
+<button id="allow">
 Allow Access
 </button>
 
-<button
-  onclick="document.title='REJECTED'"
->
+<button id="deny">
 Decline
 </button>
 </div>
+<script>
+const allowButton = document.getElementById("allow");
+const denyButton = document.getElementById("deny");
+async function respond(approved) {
+  allowButton.disabled = true;
+  denyButton.disabled = true;
+  try {
+    const result = await window.electronBridge.respondToApproval(approved);
+    if (!result?.ok) {
+      allowButton.disabled = false;
+      denyButton.disabled = false;
+      document.getElementById("status").textContent = result?.error || "Could not send your response. Please try again.";
+    }
+  } catch (error) {
+    allowButton.disabled = false;
+    denyButton.disabled = false;
+    document.getElementById("status").textContent = error?.message || "Could not send your response. Please try again.";
+  }
+}
+allowButton.addEventListener("click", () => respond(true));
+denyButton.addEventListener("click", () => respond(false));
+</script>
+<p id="status" role="status"></p>
 
 </body>
 </html>`;
 
-  approvalWindow.loadURL(
-    `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
-  );
+  approvalWindow.once("ready-to-show", () => {
+    if (!approvalWindow || approvalWindow.isDestroyed()) return;
+    lifecycleState.consentWindow = true;
+    setStartupStage("consent-window-shown");
+    writeAgentLog("info", "CONSENT_WINDOW_SHOWN", { sessionId: data?.sessionId });
+    approvalWindow.show();
+    approvalWindow.focus();
+  });
 
-  approvalWindow.show();
-
-  approvalWindow.webContents.on(
-    "page-title-updated",
-    (_event, title) => {
-      if (!socket) return;
-
-      if (title === "APPROVED") {
-        socket.emit("client-approved-connection", {
-          supportCode: CONFIG.supportCode,
-          sessionId: data.sessionId,
-        });
-
-        if (!approvalWindow.isDestroyed()) {
-          approvalWindow.close();
-        }
-
-      } else if (title === "REJECTED") {
-        socket.emit("client-rejected-connection", {
-          supportCode: CONFIG.supportCode,
-          sessionId: data.sessionId,
-        });
-
-        if (!approvalWindow.isDestroyed()) {
-          approvalWindow.close();
-        }
-      }
-    }
-  );
+  approvalWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+    .then(() => writeAgentLog("info", "Consent window document loaded.", { sessionId: data?.sessionId }))
+    .catch((error) => writeAgentLog("error", "Consent window document load failed.", error));
 
   approvalWindow.on("closed", () => {
+    const hadPendingRequest = !!pendingApprovalRequest && !approvalDecisionHandled;
+    writeAgentLog(hadPendingRequest ? "warn" : "info", hadPendingRequest
+      ? "Consent window closed before a decision; treating the close as a rejection."
+      : "Consent window closed after a recorded decision.", {
+      sessionId: pendingApprovalRequest?.sessionId,
+      socketConnected: !!socket?.connected,
+    });
+    if (hadPendingRequest && socket?.connected) {
+      socket.emit("client-rejected-connection", {
+        supportCode: CONFIG.supportCode,
+        sessionId: pendingApprovalRequest.sessionId,
+      });
+    }
+    pendingApprovalRequest = null;
+    approvalDecisionHandled = false;
+    lifecycleState.technicianRequest = false;
+    lifecycleState.consentWindow = false;
     approvalWindow = null;
   });
 }
@@ -1166,6 +1286,7 @@ function startApprovedSession() {
   console.log("[Agent] Starting approved session");
 
   sessionActive = true;
+  lifecycleState.webrtc = true;
 
   updateTrayMenu();
 }
@@ -1285,6 +1406,11 @@ function connectSocket() {
   }
 
   if (socket) {
+    writeAgentLog("warn", "Disconnecting the previous Socket.IO client before creating a replacement.", {
+      previousSocketId: socket.id || null,
+      previousSocketConnected: socket.connected,
+      callStack: new Error("connectSocket replacement").stack,
+    });
     socket.removeAllListeners();
     socket.disconnect();
     socket = null;
@@ -1313,11 +1439,15 @@ function connectSocket() {
     reconnectionDelay: 2000,
     reconnectionDelayMax: 30000,
   });
+  lifecycleState.socketId = socket.id || null;
+  lifecycleState.socketConnected = socket.connected;
   writeAgentLog("info", "Socket.IO client initialized.");
 
   socket.on("connect", () => {
+    lifecycleState.socketId = socket.id;
+    lifecycleState.socketConnected = true;
     setStartupStage("socket-connected");
-    writeAgentLog("info", "Socket.IO connected.", { socketId: socket.id });
+    writeAgentLog("info", "SOCKET_CONNECTED", { socketId: socket.id });
     console.log(
       "[Agent] Socket connected:",
       socket.id
@@ -1327,6 +1457,11 @@ function connectSocket() {
 
     updateTrayMenu();
 
+    writeAgentLog("info", "SOCKET_REGISTER_START", {
+      supportCode: CONFIG.supportCode,
+      socketId: socket.id,
+      unattended: CONFIG.unattendedAccess,
+    });
     socket.emit("register-client", {
       supportCode: CONFIG.supportCode,
       computerName: os.hostname(),
@@ -1335,6 +1470,11 @@ function connectSocket() {
       sessionId: activeSessionId,
     });
       setStartupStage("customer-registration-emitted");
+      writeAgentLog("info", "SOCKET_REGISTERED", {
+        supportCode: CONFIG.supportCode,
+        socketId: socket.id,
+        unattended: CONFIG.unattendedAccess,
+      });
       writeAgentLog("info", "Customer registration emitted.", {
         supportCodeConfigured: CONFIG.supportCode.length === 6,
         serverUrl: CONFIG.serverUrl,
@@ -1357,8 +1497,21 @@ function connectSocket() {
       }, 30000); // every 5 minutes
   });
 
-  socket.on("disconnect", (reason) => {
-    writeAgentLog("warn", "Socket.IO disconnected.", { reason });
+  socket.on("disconnect", (reason, details) => {
+    lifecycleState.socketConnected = false;
+    writeAgentLog("warn", "SOCKET_DISCONNECT", {
+      reason,
+      description: details?.message || details?.description || null,
+      supportCode: CONFIG.supportCode,
+      socketId: socket?.id || lifecycleState.socketId,
+      socketConnected: !!socket?.connected,
+      unattended: CONFIG.unattendedAccess,
+      technicianRequest: lifecycleState.technicianRequest,
+      consentWindow: !!(approvalWindow && !approvalWindow.isDestroyed()),
+      webrtc: lifecycleState.webrtc,
+      pid: process.pid,
+    });
+    writeAgentLog("warn", "Socket.IO disconnected.", { reason, details });
     console.log(
       "[Agent] Socket disconnected:",
       reason
@@ -1390,6 +1543,13 @@ function connectSocket() {
   });
 
   socket.on("approval-request", (data) => {
+    lifecycleState.technicianRequest = true;
+    writeAgentLog("info", "TECH_REQUEST_RECEIVED", {
+      supportCode: CONFIG.supportCode,
+      sessionId: data?.sessionId,
+      techSocketId: data?.techSocketId,
+      unattended: CONFIG.unattendedAccess,
+    });
     setStartupStage("technician-approval-request-received");
     writeAgentLog("info", "Technician approval request received.", {
       sessionId: data?.sessionId,
@@ -1408,6 +1568,7 @@ function connectSocket() {
         supportCode: CONFIG.supportCode,
         sessionId: data.sessionId,
       });
+      lifecycleState.technicianRequest = false;
 
       return;
     }
@@ -1428,6 +1589,12 @@ function connectSocket() {
 
     try {
       if (setupWindow && !setupWindow.isDestroyed()) {
+        lifecycleState.webrtc = true;
+        writeAgentLog("info", "WEBRTC_START", {
+          sessionId,
+          setupWindowId: setupWindow.id,
+          setupWindowDestroyed: setupWindow.isDestroyed(),
+        });
         const sources = await desktopCapturer.getSources({ types: ["screen"] });
         const targetSource = sources[Math.min(activeMonitor, Math.max(sources.length - 1, 0))] || sources[0];
         setupWindow.webContents.send("start-webrtc-stream", {
@@ -1444,6 +1611,11 @@ function connectSocket() {
   });
 
   socket.on("webrtc-signaling", (data) => {
+    writeAgentLog("info", "WEBRTC_SIGNAL_RECEIVED", {
+      type: data?.type,
+      sessionId: data?.sessionId,
+      supportCode: CONFIG.supportCode,
+    });
     if (!setupWindow || setupWindow.isDestroyed()) return;
     setupWindow.webContents.send("webrtc-signaling-incoming", data);
   });
@@ -1454,6 +1626,7 @@ function connectSocket() {
       return;
     }
     console.log("[Agent] Tech intentionally ended session");
+    lifecycleState.webrtc = false;
     endSession();
   });
 
@@ -1722,12 +1895,23 @@ app.on("activate", () => {
 
 app.on("before-quit", () => {
   setStartupStage("before-quit");
-  writeAgentLog("warn", "Electron before-quit received.");
+  writeAgentLog("warn", "Electron before-quit received; intentional application shutdown.", {
+    socketId: socket?.id || null,
+    socketConnected: !!socket?.connected,
+    technicianRequest: lifecycleState.technicianRequest,
+    consentWindow: !!(approvalWindow && !approvalWindow.isDestroyed()),
+    webrtc: lifecycleState.webrtc,
+    callStack: new Error("before-quit").stack,
+  });
   globalShortcut.unregisterAll();
 
   closeAllPrivacyWindows();
 
   if (socket) {
+    writeAgentLog("warn", "Disconnecting Socket.IO as part of Electron before-quit.", {
+      socketId: socket.id,
+      socketConnected: socket.connected,
+    });
     socket.disconnect();
   }
 });

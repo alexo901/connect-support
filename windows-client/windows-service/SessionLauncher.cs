@@ -1,9 +1,68 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using Microsoft.Win32.SafeHandles;
 using System.Runtime.InteropServices;
 using System.Text;
 
 namespace ConnectSupportService;
+
+internal sealed class LaunchedAgentProcess : IDisposable
+{
+    private const uint WaitObject0 = 0;
+    private const uint WaitTimeout = 258;
+    private SafeWaitHandle? _processHandle;
+
+    internal LaunchedAgentProcess(int processId, uint sessionId, IntPtr processHandle)
+    {
+        ProcessId = processId;
+        SessionId = sessionId;
+        _processHandle = new SafeWaitHandle(processHandle, ownsHandle: true);
+    }
+
+    public int ProcessId { get; }
+    public uint SessionId { get; }
+
+    public bool HasExited
+    {
+        get
+        {
+            var handle = _processHandle ?? throw new ObjectDisposedException(nameof(LaunchedAgentProcess));
+            var waitResult = Native.WaitForSingleObject(handle, 0);
+            if (waitResult == WaitObject0) return true;
+            if (waitResult == WaitTimeout) return false;
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "WaitForSingleObject(agent process) failed.");
+        }
+    }
+
+    public void Terminate(uint exitCode)
+    {
+        var handle = _processHandle ?? throw new ObjectDisposedException(nameof(LaunchedAgentProcess));
+        if (!Native.TerminateProcess(handle, exitCode))
+        {
+            var error = Marshal.GetLastWin32Error();
+            if (!HasExited)
+            {
+                throw new Win32Exception(error, "TerminateProcess(agent process) failed.");
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        _processHandle?.Dispose();
+        _processHandle = null;
+    }
+
+    private static class Native
+    {
+        [DllImport("kernel32.dll", SetLastError = true)]
+        internal static extern uint WaitForSingleObject(SafeWaitHandle handle, uint milliseconds);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool TerminateProcess(SafeWaitHandle process, uint exitCode);
+    }
+}
 
 internal static class SessionLauncher
 {
@@ -66,7 +125,7 @@ internal static class SessionLauncher
         return selectedSession;
     }
 
-    public static Process Launch(string executablePath, uint sessionId)
+    public static LaunchedAgentProcess Launch(string executablePath, uint sessionId)
     {
         var servicePath = Environment.ProcessPath ?? "<unknown>";
         var fullAgentPath = Path.GetFullPath(executablePath);
@@ -172,9 +231,15 @@ internal static class SessionLauncher
             ServiceFileLog.Write("[Agent] CreateProcessAsUserW succeeded");
             ServiceFileLog.Write($"[Agent] PID: {processInfo.ProcessId}");
 
-            // Acquire a managed Process handle before closing the native process handle
-            // in finally. This keeps the created process available to the supervisor.
-            return Process.GetProcessById(checked((int)processInfo.ProcessId));
+            // Transfer ownership of the exact process handle returned by
+            // CreateProcessAsUserW. Monitoring/termination through this handle is
+            // immune to PID reuse; the service records the native PID separately.
+            var launchedProcess = new LaunchedAgentProcess(
+                checked((int)processInfo.ProcessId),
+                sessionId,
+                processInfo.Process);
+            processInfo.Process = IntPtr.Zero;
+            return launchedProcess;
         }
         finally
         {

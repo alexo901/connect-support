@@ -102,7 +102,7 @@ export default function Dashboard() {
 
   const rtcConfig = {
     iceServers: [
-      { urls: "stun:://google.com" },
+      { urls: "stun:stun.l.google.com:19302" },
       {
         urls: "turn:openrelay.metered.ca:80",
         username: "openrelayproject",

@@ -1398,8 +1398,21 @@ io.on("connection", (socket) => {
         );
 
         socket.join(room);
+        if (sessionId) socket.join(`session:${sessionId}`);
+        const activeClientSocketId = activeClientSockets.get(supportCode) || null;
+        console.log("[Socket] tech-connect-request received:", {
+          supportCode,
+          sessionId,
+          techSocketId: socket.id,
+          activeClientSocketId,
+          unattendedAccess,
+          deviceRoomMembers: io.sockets.adapter.rooms.get(room)?.size || 0,
+        });
 
         if (unattendedAccess) {
+          if (sessionId && activeClientSocketId) {
+            io.sockets.sockets.get(activeClientSocketId)?.join(`session:${sessionId}`);
+          }
           io.to(room).emit(
             "connection-approved",
             {
@@ -1437,7 +1450,9 @@ io.on("connection", (socket) => {
 
         console.log(
           "[Socket] tech connect request:",
-          supportCode
+          supportCode,
+          "approval delivered to active client:",
+          !!activeClientSocketId
         );
       } catch (err) {
         console.error(
@@ -1466,6 +1481,24 @@ io.on("connection", (socket) => {
         const room =
           `device-${supportCode}`;
 
+        if (sessionId) {
+          socket.join(`session:${sessionId}`);
+          for (const [techSocketId, metadata] of socketMeta) {
+            if (
+              metadata.role === "tech" &&
+              metadata.deviceCode === supportCode &&
+              String(metadata.sessionId) === String(sessionId)
+            ) {
+              io.sockets.sockets.get(techSocketId)?.join(`session:${sessionId}`);
+            }
+          }
+          console.log("[Socket] approved peers joined WebRTC session room:", {
+            supportCode,
+            sessionId,
+            clientSocketId: socket.id,
+          });
+        }
+
         io.to(room).emit(
           "connection-approved",
           {
@@ -1482,6 +1515,14 @@ io.on("connection", (socket) => {
             sessionId,
           }
         );
+        console.log("[Socket] client approval relayed:", {
+          supportCode,
+          sessionId,
+          clientSocketId: socket.id,
+          techSocketIds: [...socketMeta.entries()]
+            .filter(([, metadata]) => metadata.role === "tech" && metadata.deviceCode === supportCode)
+            .map(([socketId]) => socketId),
+        });
       } catch (err) {
         console.error(
           "[client-approved-connection]",
@@ -1511,6 +1552,7 @@ io.on("connection", (socket) => {
             supportCode,
           }
         );
+        console.log("[Socket] client rejection relayed:", { supportCode, sessionId: data.sessionId, clientSocketId: socket.id });
       } catch (err) {
         console.error(
           "[client-rejected-connection]",
@@ -1896,10 +1938,20 @@ io.on("connection", (socket) => {
 
   socket.on(
     "disconnect",
-    () => {
+    (reason, details) => {
       try {
         const meta =
           socketMeta.get(socket.id);
+
+        console.warn("[Socket] disconnect observed:", {
+          socketId: socket.id,
+          role: meta?.role || "unregistered",
+          supportCode: meta?.deviceCode || null,
+          sessionId: meta?.sessionId || null,
+          reason,
+          description: details?.message || details?.description || null,
+          transport: socket.conn?.transport?.name || null,
+        });
 
         if (
           meta?.role === "client" &&

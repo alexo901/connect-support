@@ -10,7 +10,8 @@ internal sealed class AgentSupervisorService(ILogger<AgentSupervisorService> log
     private readonly string _agentPath = Path.GetFullPath(
         Path.Combine(AppContext.BaseDirectory, "..", "..", "Connect Support.exe"));
 
-    private Process? _agentProcess;
+    private Process? _existingAgentProcess;
+    private LaunchedAgentProcess? _launchedAgentProcess;
     private int? _agentProcessId;
     private uint? _sessionId;
 
@@ -77,11 +78,11 @@ internal sealed class AgentSupervisorService(ILogger<AgentSupervisorService> log
 
     private async Task EnsureAgentRunningAsync(uint sessionId, CancellationToken stoppingToken)
     {
-        if (_agentProcess is not null)
+        if (_launchedAgentProcess is not null)
         {
             try
             {
-                if (!_agentProcess.HasExited)
+                if (!_launchedAgentProcess.HasExited)
                 {
                     return;
                 }
@@ -89,35 +90,54 @@ internal sealed class AgentSupervisorService(ILogger<AgentSupervisorService> log
                 logger.LogWarning("Interactive agent process {ProcessId} exited; restarting.", _agentProcessId);
                 ServiceFileLog.Write($"[Agent] PID {_agentProcessId} exited; restarting it.");
             }
-            catch (Exception exception) when (exception is InvalidOperationException or
-                                               ObjectDisposedException or
-                                               System.ComponentModel.Win32Exception)
+            catch (Exception exception) when (exception is ObjectDisposedException or System.ComponentModel.Win32Exception)
             {
-                // HasExited is valid for a process opened by PID. Do not read ExitCode:
-                // this service did not start the Process object through Process.Start.
                 logger.LogWarning(exception, "Could not query tracked agent PID {ProcessId}; will check by PID again.",
                     _agentProcessId);
                 ServiceFileLog.Write($"[Agent] Could not query PID {_agentProcessId}; treating its state as uncertain: {exception}");
                 return;
             }
 
-            _agentProcess.Dispose();
-            _agentProcess = null;
+            _launchedAgentProcess.Dispose();
+            _launchedAgentProcess = null;
             _agentProcessId = null;
         }
 
-        _agentProcess = FindExistingAgent(sessionId);
-        if (_agentProcess is not null)
+        if (_existingAgentProcess is not null)
         {
-            _agentProcessId = _agentProcess.Id;
+            try
+            {
+                if (!_existingAgentProcess.HasExited)
+                {
+                    return;
+                }
+                _existingAgentProcess.Dispose();
+                _existingAgentProcess = null;
+                _agentProcessId = null;
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or
+                                               ObjectDisposedException or
+                                               System.ComponentModel.Win32Exception)
+            {
+                logger.LogWarning(exception, "Could not observe existing agent PID {ProcessId}; retrying observation.",
+                    _agentProcessId);
+                ServiceFileLog.Write($"[Agent] Could not observe existing PID {_agentProcessId}; will retry: {exception}");
+                return;
+            }
+        }
+
+        _existingAgentProcess = FindExistingAgent(sessionId);
+        if (_existingAgentProcess is not null)
+        {
+            _agentProcessId = _existingAgentProcess.Id;
             logger.LogInformation("Monitoring existing agent process {ProcessId} in session {SessionId}.",
                 _agentProcessId, sessionId);
             return;
         }
 
         stoppingToken.ThrowIfCancellationRequested();
-        _agentProcess = SessionLauncher.Launch(_agentPath, sessionId);
-        _agentProcessId = _agentProcess.Id;
+        _launchedAgentProcess = SessionLauncher.Launch(_agentPath, sessionId);
+        _agentProcessId = _launchedAgentProcess.ProcessId;
         logger.LogInformation("Started Connect Support.exe in session {SessionId} (PID {ProcessId}).",
             sessionId, _agentProcessId);
         ServiceFileLog.Write($"[Agent] Supervisor is tracking PID {_agentProcessId} in session {sessionId}.");
@@ -151,32 +171,57 @@ internal sealed class AgentSupervisorService(ILogger<AgentSupervisorService> log
 
     private async Task StopAgentAsync()
     {
-        var process = _agentProcess;
+        var existingProcess = _existingAgentProcess;
+        var launchedProcess = _launchedAgentProcess;
         var processId = _agentProcessId;
-        _agentProcess = null;
+        var sessionId = _sessionId;
+        _existingAgentProcess = null;
+        _launchedAgentProcess = null;
         _agentProcessId = null;
-        if (process is null)
+        if (existingProcess is null && launchedProcess is null)
         {
             return;
         }
 
         try
         {
-            if (!process.HasExited)
+            if (launchedProcess is not null)
             {
-                ServiceFileLog.Write($"[Agent] Stopping tracked PID {processId}.");
-                process.CloseMainWindow();
-                using var timeout = new CancellationTokenSource(GracefulStopTimeout);
-                try
+                if (!launchedProcess.HasExited)
                 {
-                    await process.WaitForExitAsync(timeout.Token);
-                }
-                catch (OperationCanceledException)
-                {
-                    if (!process.HasExited)
+                    ServiceFileLog.Write($"[Agent] Stopping tracked native PID {processId} in session {sessionId}.");
+                    TryCloseLaunchedAgentWindow(processId, sessionId);
+                    var stopped = await WaitForNativeAgentExitAsync(launchedProcess, GracefulStopTimeout);
+                    if (!stopped)
                     {
-                        process.Kill(entireProcessTree: true);
-                        await process.WaitForExitAsync();
+                        // TerminateProcess uses the retained CreateProcessAsUserW process
+                        // handle, never a PID lookup that could target a reused PID.
+                        launchedProcess.Terminate(1);
+                        await WaitForNativeAgentExitAsync(launchedProcess, Timeout.InfiniteTimeSpan);
+                    }
+                }
+            }
+
+            if (existingProcess is not null)
+            {
+                if (!existingProcess.HasExited)
+                {
+                    ServiceFileLog.Write($"[Agent] Stopping previously-running agent PID {processId}.");
+                    existingProcess.CloseMainWindow();
+                    using var timeout = new CancellationTokenSource(GracefulStopTimeout);
+                    try
+                    {
+                        await existingProcess.WaitForExitAsync(timeout.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        if (!existingProcess.HasExited)
+                        {
+                            // This Process object owns a handle to the verified process
+                            // instance, so Kill cannot affect a later PID reuse.
+                            existingProcess.Kill(entireProcessTree: true);
+                            await existingProcess.WaitForExitAsync();
+                        }
                     }
                 }
             }
@@ -190,8 +235,50 @@ internal sealed class AgentSupervisorService(ILogger<AgentSupervisorService> log
         }
         finally
         {
-            process.Dispose();
+            existingProcess?.Dispose();
+            launchedProcess?.Dispose();
         }
+    }
+
+    private void TryCloseLaunchedAgentWindow(int? processId, uint? sessionId)
+    {
+        if (!processId.HasValue) return;
+
+        try
+        {
+            using var observer = Process.GetProcessById(processId.Value);
+            if ((uint)observer.SessionId != sessionId ||
+                !string.Equals(observer.MainModule?.FileName, _agentPath, StringComparison.OrdinalIgnoreCase))
+            {
+                ServiceFileLog.Write($"[Agent] Skipping graceful close for PID {processId}; image/session no longer matches Connect Support.");
+                return;
+            }
+
+            observer.CloseMainWindow();
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or
+                                           System.ComponentModel.Win32Exception or NotSupportedException)
+        {
+            ServiceFileLog.Write($"[Agent] Graceful close lookup for PID {processId} failed; retained process handle remains authoritative: {exception}");
+        }
+    }
+
+    private static async Task<bool> WaitForNativeAgentExitAsync(
+        LaunchedAgentProcess process,
+        TimeSpan timeout)
+    {
+        var timer = Stopwatch.StartNew();
+        while (!process.HasExited)
+        {
+            if (timeout != Timeout.InfiniteTimeSpan && timer.Elapsed >= timeout)
+            {
+                return false;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(100));
+        }
+
+        return true;
     }
 }
 
