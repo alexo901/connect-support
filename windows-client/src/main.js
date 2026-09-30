@@ -302,6 +302,8 @@ writeAgentLog("info", "Startup mode selected.", {
 });
 
 let setupWindow = null;
+let setupWindowReadyPromise = null;
+let rejectSetupWindowReady = null;
 let consentWindow = null;
 let tray = null;
 let approvalWindow = null;
@@ -456,10 +458,11 @@ document.getElementById("deny").addEventListener("click", () => {
 // ── Setup window ──────────────────────────────────────────────────────────────
 function showSetupWindow({ hidden = false } = {}) {
   if (setupWindow && !setupWindow.isDestroyed()) {
-    setupWindow.focus();
-    return;
+    if (!hidden) setupWindow.focus();
+    return setupWindowReadyPromise || Promise.resolve(setupWindow);
   }
 
+  writeAgentLog("info", "[WebRTC] Renderer creation requested", { hidden });
   writeAgentLog("info", "Creating setup/WebRTC renderer window.", { hidden });
   setupWindow = new BrowserWindow({
     width: 480,
@@ -476,6 +479,55 @@ function showSetupWindow({ hidden = false } = {}) {
       nodeIntegration: false,
     },
   });
+
+  const windowRef = setupWindow;
+  let settled = false;
+  setupWindowReadyPromise = new Promise((resolve, reject) => {
+    rejectSetupWindowReady = reject;
+
+    windowRef.webContents.once("did-finish-load", () => {
+      if (setupWindow !== windowRef || windowRef.isDestroyed() || settled) return;
+      settled = true;
+      rejectSetupWindowReady = null;
+      writeAgentLog("info", "[WebRTC] Renderer ready", { hidden, windowId: windowRef.id });
+      resolve(windowRef);
+    });
+
+    windowRef.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame || settled || setupWindow !== windowRef) return;
+      const error = new Error(`WebRTC renderer failed to load: ${errorCode} ${errorDescription}`);
+      writeAgentLog("error", "[WebRTC] Renderer load failed", {
+        errorCode,
+        errorDescription,
+        validatedURL,
+        windowId: windowRef.id,
+      });
+      settled = true;
+      setupWindow = null;
+      setupWindowReadyPromise = null;
+      rejectSetupWindowReady = null;
+      reject(error);
+      if (!windowRef.isDestroyed()) windowRef.destroy();
+    });
+
+    windowRef.webContents.on("render-process-gone", (_event, details) => {
+      if (setupWindow !== windowRef) return;
+      const error = new Error(`WebRTC renderer process gone: ${details?.reason || "unknown reason"}`);
+      writeAgentLog("error", "[WebRTC] Renderer process gone", details);
+      const rejectPending = rejectSetupWindowReady;
+      setupWindow = null;
+      setupWindowReadyPromise = null;
+      rejectSetupWindowReady = null;
+      if (!settled) {
+        settled = true;
+        rejectPending?.(error);
+      }
+      if (!windowRef.isDestroyed()) windowRef.destroy();
+    });
+  });
+  // Some setup-window callers do not await rendering. Keep their failures logged
+  // without turning a renderer rejection into an unhandled main-process rejection.
+  setupWindowReadyPromise.catch(() => {});
 
   const html = `
 <!doctype html>
@@ -730,16 +782,50 @@ code.addEventListener("keydown", (event) => {
 </body>
 </html>`;
 
-  setupWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+  const readyPromise = setupWindowReadyPromise;
+  windowRef.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
     .then(() => writeAgentLog("info", "Setup/WebRTC renderer content loaded.", { hidden }))
-    .catch((error) => writeAgentLog("error", "Setup/WebRTC renderer load failed.", error));
+    .catch((error) => {
+      if (setupWindow !== windowRef) return;
+      writeAgentLog("error", "[WebRTC] Renderer load failed", error);
+      setupWindow = null;
+      setupWindowReadyPromise = null;
+      const rejectPending = rejectSetupWindowReady;
+      rejectSetupWindowReady = null;
+      if (!settled) {
+        settled = true;
+        rejectPending?.(error);
+      }
+      if (!windowRef.isDestroyed()) windowRef.destroy();
+    });
 
-  if (!hidden) setupWindow.show();
+  if (!hidden) windowRef.show();
 
-  setupWindow.on("closed", () => {
-    writeAgentLog("info", "Setup/WebRTC renderer window closed.");
-    setupWindow = null;
+  windowRef.on("closed", () => {
+    writeAgentLog("info", "Setup/WebRTC renderer window closed.", { windowId: windowRef.id });
+    if (setupWindow === windowRef) {
+      setupWindow = null;
+      const rejectPending = rejectSetupWindowReady;
+      setupWindowReadyPromise = null;
+      rejectSetupWindowReady = null;
+      if (!settled) {
+        settled = true;
+        rejectPending?.(new Error("WebRTC renderer window closed before it was ready."));
+      }
+    }
   });
+
+  return readyPromise;
+}
+
+async function ensureWebRTCRenderer() {
+  writeAgentLog("info", "[WebRTC] Renderer creation requested for an approved session.");
+  try {
+    return await showSetupWindow({ hidden: true });
+  } catch (error) {
+    writeAgentLog("error", "[WebRTC] Renderer load failed", error);
+    throw error;
+  }
 }
 
 // ── IPC ───────────────────────────────────────────────────────────────────────
@@ -1588,26 +1674,34 @@ function connectSocket() {
     activeSessionId = sessionId || activeSessionId;
 
     try {
-      if (setupWindow && !setupWindow.isDestroyed()) {
-        lifecycleState.webrtc = true;
-        writeAgentLog("info", "WEBRTC_START", {
-          sessionId,
-          setupWindowId: setupWindow.id,
-          setupWindowDestroyed: setupWindow.isDestroyed(),
-        });
-        const sources = await desktopCapturer.getSources({ types: ["screen"] });
-        const targetSource = sources[Math.min(activeMonitor, Math.max(sources.length - 1, 0))] || sources[0];
-        setupWindow.webContents.send("start-webrtc-stream", {
-          sourceId: targetSource?.id || null,
-          activeSessionId,
-          supportCode: CONFIG.supportCode,
-        });
-      }
-    } catch (err) {
-      console.error("[Agent] WebRTC source selection failed:", err.message);
-    }
+      const renderer = await ensureWebRTCRenderer();
+      writeAgentLog("info", "[WebRTC] Session initialization started", {
+        sessionId: activeSessionId,
+        rendererWindowId: renderer.id,
+      });
 
-    startApprovedSession();
+      lifecycleState.webrtc = true;
+      const sources = await desktopCapturer.getSources({ types: ["screen"] });
+      const targetSource = sources[Math.min(activeMonitor, Math.max(sources.length - 1, 0))] || sources[0];
+      if (!targetSource) {
+        throw new Error("Electron did not return an available screen-capture source.");
+      }
+
+      renderer.webContents.send("start-webrtc-stream", {
+        sourceId: targetSource.id,
+        activeSessionId,
+        supportCode: CONFIG.supportCode,
+      });
+      writeAgentLog("info", "[WebRTC] Session initialization completed", {
+        sessionId: activeSessionId,
+        rendererWindowId: renderer.id,
+      });
+      startApprovedSession();
+    } catch (err) {
+      lifecycleState.webrtc = false;
+      writeAgentLog("error", "[WebRTC] Session initialization failed; keeping Socket.IO agent online.", err);
+      console.error("[WebRTC] Session initialization failed; customer agent remains connected.", err);
+    }
   });
 
   socket.on("webrtc-signaling", (data) => {
@@ -1786,14 +1880,6 @@ app.whenReady().then(() => {
       "[Agent] Tray creation failed:",
       err.message
     );
-  }
-
-  // Keep the WebRTC renderer alive without showing the support-code setup UI.
-  // The installer-provisioned agent connects automatically, but still prompts
-  // the customer to approve each technician session.
-  if (CONFIG.supportCode && !setupWindow) {
-    setStartupStage("creating-hidden-webrtc-renderer");
-    showSetupWindow({ hidden: true });
   }
 
   try {
